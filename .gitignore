@@ -36,6 +36,5 @@ cmake-build-*/
 # Ignore compiled executables without extensions (like test_alto)
 # Matches any file in root or subdirectories with no '.' in the name
 # Common for compiled test binaries
-*
 !*/
 !*.*
