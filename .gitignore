@@ -1,0 +1,41 @@
+# Ignore text files
+*.txt
+
+# Ignore VS Code settings
+.vscode/
+
+# Ignore object and binary files
+*.o
+*.obj
+*.lo
+*.la
+*.al
+*.out
+*.so
+*.dll
+*.dylib
+*.a
+*.lib
+*.exe
+
+# Ignore build directories
+build/
+bin/
+dist/
+Debug/
+Release/
+CMakeFiles/
+cmake-build-*/
+
+# Ignore temporary and cache files
+*.log
+*.tmp
+*.cache
+*.swp
+
+# Ignore compiled executables without extensions (like test_alto)
+# Matches any file in root or subdirectories with no '.' in the name
+# Common for compiled test binaries
+*
+!*/
+!*.*
