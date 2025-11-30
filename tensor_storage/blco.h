@@ -147,11 +147,6 @@ protected:
             shift += bit_widths[i];
         }
 
-        // debug prints (optional)
-        std::cout << "indices:";
-        for (int k = 0; k < this->rank; ++k) std::cout << " " << indices[k];
-        std::cout << "\n";
-        std::cout << "Linearize bits: "; print_lsb_bits(val, 22); std::cout << "\n";
         return val;
     }
 
@@ -244,7 +239,7 @@ public:
     //------------------------------------------------------------------
     // Constructors: build from NNZ list
     //------------------------------------------------------------------
-    Blco_Tensor(const std::vector<NNZ_Entry<T>>& entry_vec, std::vector<int> dims) : Tensor<T,S>(entry_vec, dims)
+    Blco_Tensor(const std::vector<NNZ_Entry<T>>& entry_vec, std::vector<int> dims, int decomp_rank = 10) : Tensor<T,S>(entry_vec, dims, decomp_rank)
     {
         determine_bit_widths();
         create_blco_masks();

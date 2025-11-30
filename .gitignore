@@ -33,4 +33,7 @@ cmake-build-*/
 *.cache
 *.swp
 
+#Logs and tensor directories
+logs/
+tensors/
 

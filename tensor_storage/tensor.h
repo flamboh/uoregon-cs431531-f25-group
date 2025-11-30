@@ -148,7 +148,7 @@ protected:
     {
         for(int i = 0; i < rank; i++){
             T* mat;
-            init_mode_matrix(mat,dims[i],factor_rank);
+            init_mode_matrix(mat,factor_rank,dims[i]); //Matricies are initialized transposed for tucker decomp
             fmats.push_back(mat);
         }
     }

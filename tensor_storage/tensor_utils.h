@@ -171,6 +171,63 @@ std::vector<NNZ_Entry<T>> generate_block_sparse_tensor_nd(
     return entries;
 }
 
+// Read a tensor from a file (1-indexed format).
+// Each line: i j k value
+// Converts to 0-indexed internally.
+// Read a tensor from a file (1-indexed format).
+// Each line: index_1 index_2 ... index_rank value
+// Converts to 0-indexed internally.
+template<typename T>
+std::vector<NNZ_Entry<T>> read_tensor_file(const std::string &filename, int rank, size_t maxLines = 0) 
+{
+    std::ifstream file(filename);
+    std::vector<NNZ_Entry<T>> entries;
+
+    if (!file.is_open()) {
+        std::cerr << "Error: Could not open file " << filename << std::endl;
+        return entries;
+    }
+
+    size_t count = 0;
+    while (count < maxLines || maxLines == 0) {
+        std::vector<int> indices(rank);
+        T value;
+        bool read_success = true;
+
+        // 1. Read 'rank' number of indices
+        for (int r = 0; r < rank; ++r) {
+            // Check if reading the index failed (e.g., end of file)
+            if (!(file >> indices[r])) {
+                read_success = false;
+                break;
+            }
+        }
+
+        // 2. Read the value (only if all indices were successfully read)
+        if (read_success) {
+            if (!(file >> value)) {
+                read_success = false;
+            }
+        }
+
+        // If reading was successful for all (rank + 1) items, process the entry
+        if (read_success) {
+            // Shift to 0-index internally
+            for (int r = 0; r < rank; ++r) {
+                indices[r] -= 1; 
+            }
+            
+            entries.push_back({rank, indices, value});
+            count++;
+        } else {
+            // Break if file read failed (reached EOF or corrupt line)
+            break; 
+        }
+    }
+
+    return entries;
+}
+
 // Return true if a given entry exists in the tensor.
 template<typename T>
 bool find_entry(std::vector<NNZ_Entry<T>> entry_vec, std::vector<int> dims, T val) {
