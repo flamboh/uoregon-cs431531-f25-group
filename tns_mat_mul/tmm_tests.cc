@@ -1,5 +1,8 @@
-#include "gpu_kernel.h"
+#include "gpu_utils.h"
 #include "tmm_utils.h"
+#include "3D_kernels.h"
+#include "4D_kernels.h"
+#include "5D_kernels.h"
 #include "../tensor_storage/blco.h"
 #include "../tensor_storage/tensor_utils.h"
 
