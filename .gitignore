@@ -1,0 +1,38 @@
+# Ignore text files
+*.txt
+
+# Ignore VS Code settings
+.vscode/
+
+# Ignore object and binary files
+*.o
+*.obj
+*.lo
+*.la
+*.al
+*.out
+*.so
+*.dll
+*.dylib
+*.a
+*.lib
+*.exe
+
+# Ignore build directories
+build/
+bin/
+dist/
+Debug/
+Release/
+CMakeFiles/
+cmake-build-*/
+
+# Ignore temporary and cache files
+*.log
+*.tmp
+*.cache
+*.swp
+
+#Logs and tensor directories
+logs/
+tensors/
