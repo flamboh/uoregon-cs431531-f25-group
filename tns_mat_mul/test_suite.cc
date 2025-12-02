@@ -1,7 +1,7 @@
-#include "tmm_utils.h"
 #include "3D_kernels.h"
 #include "4D_kernels.h"
 #include "5D_kernels.h"
+#include "cpu_tests.h"
 #include "../tensor_storage/blco.h"
 #include "../tensor_storage/tensor_utils.h"
 
@@ -60,24 +60,28 @@ void test_3D_kernels(std::vector<int> dims, int nnz, int block_size, int constru
 
     std::cout << "Testing mode 1 contraction\n";
     start = std::chrono::high_resolution_clock::now();
-    T* contraction_1 = tucker_compute_contraction_3D<T>(blco,block_size,1);
+    T* contraction_1 = contract_n_minus_one_modes_3D<T>(blco,block_size,1);
     end = std::chrono::high_resolution_clock::now();
     duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
     std::cout << "Total duration: " << static_cast<float>(duration) / 1000 << " ms\n\n";
 
     std::cout << "Testing mode 2 contraction\n";
     start = std::chrono::high_resolution_clock::now();
-    T* contraction_2 = tucker_compute_contraction_3D<T>(blco,block_size,2);
+    T* contraction_2 = contract_n_minus_one_modes_3D<T>(blco,block_size,2);
     end = std::chrono::high_resolution_clock::now();
     duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
     std::cout << "Total duration: " << static_cast<float>(duration) / 1000 << " ms\n\n";
 
     std::cout << "Testing mode 3 contraction\n";
     start = std::chrono::high_resolution_clock::now();
-    T* contraction_3 = tucker_compute_contraction_3D<T>(blco,block_size,3);
+    T* contraction_3 = contract_n_minus_one_modes_3D<T>(blco,block_size,3);
     end = std::chrono::high_resolution_clock::now();
     duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
     std::cout << "Total duration: " << static_cast<float>(duration) / 1000 << " ms\n\n";
+
+    std::cout<<"constructing CPU results\n";
+    
+    
 
     free(tmm_output_1);
     free(tmm_output_2);
@@ -151,28 +155,28 @@ void test_4D_kernels(std::vector<int> dims, int nnz, int block_size, int constru
 
     std::cout << "Testing mode 1 contraction\n";
     start = std::chrono::high_resolution_clock::now();
-    T* contraction_1 = tucker_compute_contraction_4D<T>(blco,block_size,1);
+    T* contraction_1 = contract_n_minus_one_modes_4D<T>(blco,block_size,1);
     end = std::chrono::high_resolution_clock::now();
     duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
     std::cout << "Total duration: " << static_cast<float>(duration) / 1000 << " ms\n\n";
 
     std::cout << "Testing mode 2 contraction\n";
     start = std::chrono::high_resolution_clock::now();
-    T* contraction_2 = tucker_compute_contraction_4D<T>(blco,block_size,2);
+    T* contraction_2 = contract_n_minus_one_modes_4D<T>(blco,block_size,2);
     end = std::chrono::high_resolution_clock::now();
     duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
     std::cout << "Total duration: " << static_cast<float>(duration) / 1000 << " ms\n\n";
 
     std::cout << "Testing mode 3 contraction\n";
     start = std::chrono::high_resolution_clock::now();
-    T* contraction_3 = tucker_compute_contraction_4D<T>(blco,block_size,3);
+    T* contraction_3 = contract_n_minus_one_modes_4D<T>(blco,block_size,3);
     end = std::chrono::high_resolution_clock::now();
     duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
     std::cout << "Total duration: " << static_cast<float>(duration) / 1000 << " ms\n\n";
 
     std::cout << "Testing mode 4 contraction\n";
     start = std::chrono::high_resolution_clock::now();
-    T* contraction_4 = tucker_compute_contraction_4D<T>(blco,block_size,4);
+    T* contraction_4 = contract_n_minus_one_modes_4D<T>(blco,block_size,4);
     end = std::chrono::high_resolution_clock::now();
     duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
     std::cout << "Total duration: " << static_cast<float>(duration) / 1000 << " ms\n\n";
@@ -258,35 +262,35 @@ void test_5D_kernels(std::vector<int> dims, int nnz, int block_size, int constru
 
     std::cout << "Testing mode 1 contraction\n";
     start = std::chrono::high_resolution_clock::now();
-    T* contraction_1 = tucker_compute_contraction_5D<T>(blco,block_size,1);
+    T* contraction_1 = contract_n_minus_one_modes_5D<T>(blco,block_size,1);
     end = std::chrono::high_resolution_clock::now();
     duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
     std::cout << "Total duration: " << static_cast<float>(duration) / 1000 << " ms\n\n";
 
     std::cout << "Testing mode 2 contraction\n";
     start = std::chrono::high_resolution_clock::now();
-    T* contraction_2 = tucker_compute_contraction_5D<T>(blco,block_size,2);
+    T* contraction_2 = contract_n_minus_one_modes_5D<T>(blco,block_size,2);
     end = std::chrono::high_resolution_clock::now();
     duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
     std::cout << "Total duration: " << static_cast<float>(duration) / 1000 << " ms\n\n";
 
     std::cout << "Testing mode 3 contraction\n";
     start = std::chrono::high_resolution_clock::now();
-    T* contraction_3 = tucker_compute_contraction_5D<T>(blco,block_size,3);
+    T* contraction_3 = contract_n_minus_one_modes_5D<T>(blco,block_size,3);
     end = std::chrono::high_resolution_clock::now();
     duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
     std::cout << "Total duration: " << static_cast<float>(duration) / 1000 << " ms\n\n";
 
     std::cout << "Testing mode 4 contraction\n";
     start = std::chrono::high_resolution_clock::now();
-    T* contraction_4 = tucker_compute_contraction_5D<T>(blco,block_size,4);
+    T* contraction_4 = contract_n_minus_one_modes_5D<T>(blco,block_size,4);
     end = std::chrono::high_resolution_clock::now();
     duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
     std::cout << "Total duration: " << static_cast<float>(duration) / 1000 << " ms\n\n";
 
     std::cout << "Testing mode 5 contraction\n";
     start = std::chrono::high_resolution_clock::now();
-    T* contraction_5 = tucker_compute_contraction_5D<T>(blco,block_size,5);
+    T* contraction_5 = contract_n_minus_one_modes_5D<T>(blco,block_size,5);
     end = std::chrono::high_resolution_clock::now();
     duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
     std::cout << "Total duration: " << static_cast<float>(duration) / 1000 << " ms\n\n";

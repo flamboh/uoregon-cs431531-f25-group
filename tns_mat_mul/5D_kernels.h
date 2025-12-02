@@ -533,17 +533,17 @@ T* tucker_compute_core_5D(const Blco_Tensor<T,S>& sparse_tensor, int block_size)
 
 
 //======================================================================
-// Contracted Matrix calculations
+// Multimode contractions (TMM where all modes but one get contracted)
 //======================================================================
 template<typename T>
-__global__ void tucker_ttm_contraction_kernel_5D_sparse(
+__global__ void multimode_contraction_kernel_5D_sparse(
     BLCO_BLOCK_GPU<T>* input_tensor, uint64_t nnz, uint64_t* masks, 
     T* d_U1, T* d_U2, T* d_U3, T* d_U4, T* d_U5, 
     int* dims, int num_blocks, int rank, T* output_Ym, 
-    int solved_mode, int shmem_size, int wavefront_size = 64) 
+    int uncontracted_mode, int shmem_size, int wavefront_size = 64) 
 {
     // Convert 1-indexed mode to 0-indexed for array access
-    const int solved_mode_idx = solved_mode - 1; 
+    const int uncontracted_mode_idx = uncontracted_mode - 1; 
 
     int global_idx = blockIdx.x * blockDim.x + threadIdx.x;
     int block_idx = threadIdx.x;
@@ -555,11 +555,11 @@ __global__ void tucker_ttm_contraction_kernel_5D_sparse(
     const int R4 = rank; 
     const int R5 = rank; 
     
-    // Calculate the output matrix dimensions dynamically based on solved_mode
-    int Im = dims[solved_mode_idx]; 
+    // Calculate the output matrix dimensions dynamically based on uncontracted_mode
+    int Im = dims[uncontracted_mode_idx]; 
     int output_cols;
 
-    if (solved_mode_idx >= 0 && solved_mode_idx < 5) {
+    if (uncontracted_mode_idx >= 0 && uncontracted_mode_idx < 5) {
         // Correct calculation: product of all ranks / rank of the solved mode
         int total_rank_product = R1 * R2 * R3 * R4 * R5;
         output_cols = total_rank_product / rank;
@@ -628,7 +628,7 @@ __global__ void tucker_ttm_contraction_kernel_5D_sparse(
     //Fill out arrays
     int write_idx = 0; // Index for filling the compressed arrays
     for (int k = 0; k < 5; ++k) {
-        if (k != solved_mode_idx) {
+        if (k != uncontracted_mode_idx) {
             contracted_ranks[write_idx] = all_ranks[k];
             input_indices[write_idx] = *all_indices[k];
             factor_matrices[write_idx] = all_factor_mats[k];
@@ -658,7 +658,7 @@ __global__ void tucker_ttm_contraction_kernel_5D_sparse(
     const int flattened_output_cols = C1 * C2 * C3 * C4; 
     
     // Determine the output row index (i_m)
-    const int output_row_index = *all_indices[solved_mode_idx];
+    const int output_row_index = *all_indices[uncontracted_mode_idx];
 
     // --- 3. Generalized Contraction Loop (4 Nested Loops) ---
     for(int r1 = 0; r1 < C1; r1++){
@@ -717,7 +717,7 @@ __global__ void tucker_ttm_contraction_kernel_5D_sparse(
 }
 
 template<typename T, typename S>
-T* tucker_compute_contraction_5D(const Blco_Tensor<T,S>& sparse_tensor, int block_size, int mode)
+T* contract_n_minus_one_modes_5D(const Blco_Tensor<T,S>& sparse_tensor, int block_size, int mode)
 {
     const std::vector<BLCO_BLOCK_CPU<T>> blco_tensor = sparse_tensor.get_blco();
 
@@ -806,7 +806,7 @@ T* tucker_compute_contraction_5D(const Blco_Tensor<T,S>& sparse_tensor, int bloc
 
     // Launch the Core Tensor kernel (Note: Removed 'mode' and replaced single fmat with all three)
     hipLaunchKernelGGL(
-        tucker_ttm_contraction_kernel_5D_sparse<T>,  
+        multimode_contraction_kernel_5D_sparse<T>,  
         dim3(dimensions.first), dim3(dimensions.second), 
         shared_mem_bytes, // Shared memory size 
         0, // Stream
