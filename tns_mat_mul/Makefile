@@ -6,8 +6,8 @@ CXXFLAGS = -std=c++17 -O3 -fopenmp
 
 # Define the source file. It defaults to 'tmm_tests.cc' but can be overridden
 # when calling 'make' (e.g., make SOURCE=new_test.cc).
-SOURCE = core_tests.cc
-TARGET = test_core
+SOURCE = test_suite.cc
+TARGET = test_suite
 
 # Declare targets that are not files
 .PHONY: all clean

@@ -32,6 +32,55 @@ inline size_t getMaxSharedMemory() {
     return props.sharedMemPerBlock;
 }
 
+inline double get_gpu_memory_capacity() {
+    int deviceCount = 0;
+    hipGetDeviceCount(&deviceCount);
+
+    if (deviceCount == 0) {
+        std::cout << "No HIP-compatible devices found.\n";
+        return -1.0;
+    }
+
+    // Assuming we check device 0
+    int device = 0;
+    hipDeviceProp_t props;
+    hipGetDeviceProperties(&props, device);
+
+    // props.totalGlobalMem gives the memory size in bytes
+    unsigned long long total_bytes = props.totalGlobalMem;
+
+    // Convert bytes to GB for readability
+    double total_gb = static_cast<double>(total_bytes) / (1024.0 * 1024.0 * 1024.0);
+
+    // You can also check available memory at runtime
+    size_t free, total;
+    hipMemGetInfo(&free, &total);
+    double free_gb = static_cast<double>(free) / (1024.0 * 1024.0 * 1024.0);
+    return free_gb;
+}
+
+inline void print_amd_gpu_model() {
+    int deviceCount = 0;
+    hipGetDeviceCount(&deviceCount);
+
+    if (deviceCount == 0) {
+        std::cout << "No HIP-compatible AMD devices found.\n";
+        return;
+    }
+
+    // Loop through all found devices
+    for (int i = 0; i < 1; i++) {
+        hipDeviceProp_t props;
+        hipGetDeviceProperties(&props, i);
+
+        // The name of the GPU is stored in props.name
+        std::cout << "Device: " << props.name << "\n";
+        std::cout << "Arch: " << props.gcnArchName << "\n";
+        std::cout << "Shared Memory: " << props.sharedMemPerBlock << "bytes\n";
+        std::cout << "Currently Free VRAM: " << get_gpu_memory_capacity() << " GB\n";
+    }
+}
+
 //======================================================================
 // Move BLCO tensor blocks from CPU to GPU memory
 //======================================================================
