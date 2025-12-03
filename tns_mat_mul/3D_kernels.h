@@ -204,6 +204,8 @@ T* tmm_3D(const Blco_Tensor<T,S>& sparse_tensor, int mode, int block_size, bool 
 
     if(print) std::cout << "Kernel Duration: " << milliseconds << " ms\n";
 
+    HIP_CHECK(hipMemcpy(host_output_tensor, d_output_tensor, sizeof(T) * output_size, hipMemcpyDeviceToHost));
+
     // Free device memory
     free_blocks_from_gpu(d_input_tensor,num_blocks);
     HIP_CHECK(hipFree(d_output_tensor));

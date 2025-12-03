@@ -73,7 +73,9 @@ const std::vector<int>& dims, T* fmat, int decomp_rank)
                 case 3: F_row_idx = i3; break;
                 default: F_row_idx = 0; // Should not happen due to validation
             }
-            const size_t F_idx = (size_t)F_row_idx * R + r; 
+        
+            // FIX: The index calculation now assumes Column-Major storage (r * I_mode + i_mode)
+            const size_t F_idx = (size_t)r * I_mode + F_row_idx; 
             const T f_val = fmat[F_idx];
             
             // --- B. Get B Index ---
@@ -284,7 +286,7 @@ const std::vector<int>& dims, T* fmat, int decomp_rank)
 //======================================================================
 template<typename T, typename S>
 std::vector<T> core_tensor_3D_cpu(const std::vector<NNZ_Entry<T>>& sparse_tensor, const std::vector<int>& dims, 
-                                 const std::vector<T*>& fmats, int decomp_rank)
+const std::vector<T*>& fmats, int decomp_rank)
 {
     // --- 1. Validation and Dimension Setup ---
     if (dims.size() != 3 || fmats.size() != 3) {
@@ -784,30 +786,78 @@ std::vector<T> contract_tensor_5D_cpu(int mode, const std::vector<NNZ_Entry<T>>&
 // Output comparison functions
 //======================================================================
 
-//Compare tensor arrays (single mode TMM)
 template<typename T>
-bool compare_tmm_arrays(T* arr1, T* arr2, std::vector<int> dims, int decomp_rank, int uncontracted_mode)
+void print_3d_tensor_from_flat(T* arr, const std::vector<int>& j_dims)
 {
-    // The output tensor size is the product of all dimensions, with the mode-th dimension replaced by decomp_rank (R).
-    uint64_t size = (uint64_t)decomp_rank;
-    for(int i = 0; i < dims.size(); i++){
-        if(i != uncontracted_mode - 1) size *= dims[i];
+    if (j_dims.size() < 3) {
+        std::cout << "Error: Cannot print as 3D tensor. Dimension count is less than 3." << std::endl;
+        return;
+    }
+    
+    // For a 3D tensor (J1 x J2 x J3)
+    const int J1 = j_dims[0];
+    const int J2 = j_dims[1];
+    const int J3 = j_dims[2];
+
+    for (int i = 0; i < J1; ++i) { // Outer dimension (Slice)
+        std::cout << "Slice " << i << " (Mode 1):" << std::endl;
+        for (int j = 0; j < J2; ++j) { // Row dimension
+            for (int k = 0; k < J3; ++k) { // Column dimension
+                // Row-major index calculation: i * (J2*J3) + j * J3 + k
+                uint64_t index = (uint64_t)i * J2 * J3 + (uint64_t)j * J3 + (uint64_t)k;
+                
+                // Print the value with some padding
+                std::cout << arr[index] << "\t";
+            }
+            std::cout << std::endl; // Newline after each row
+        }
+        std::cout << std::endl; // Space between slices
+    }
+}
+
+
+// Compare tensor arrays (single mode TMM)
+template<typename T>
+bool compare_tmm_arrays(T* arr1, T* arr2, std::vector<int> dims, int decomp_rank, int mode)
+{
+    // 1. Determine the contracted dimensions (J1, J2, J3)
+    std::vector<int> J_dims = dims;
+    if (mode >= 1 && mode <= dims.size()) {
+        J_dims[mode - 1] = decomp_rank;
+    } else {
+        std::cerr << "Error: Invalid mode (" << mode << ") provided for comparison." << std::endl;
+        return false;
     }
 
+    const int J1 = J_dims[0];
+    const int J2 = J_dims[1];
+    const int J3 = J_dims[2];
+
+    // 2. Calculate the total size
+    uint64_t size = (uint64_t)J1 * J2 * J3;
+    
+    // Safety check for size calculation
+    if (size == 0) {
+        std::cerr << "Error: Calculated output size is zero. Check dimensions and rank." << std::endl;
+        return false;
+    }
+
+    // 3. Compare elements and print on mismatch
     for(uint64_t i = 0; i < size; i++){
         if(arr1[i] != arr2[i]) return false;
     }
+    
     return true;
 }
 
 //Compare tensor arrays (single mode TMM)
 template<typename T>
-float compare_tmm_arrays_float(T* arr1, T* arr2, std::vector<int> dims, int decomp_rank, int uncontracted_mode)
+float compare_tmm_arrays_float(T* arr1, T* arr2, std::vector<int> dims, int decomp_rank, int mode)
 {
     // The output tensor size is the product of all dimensions, with the mode-th dimension replaced by decomp_rank (R).
     uint64_t size = (uint64_t)decomp_rank;
     for(int i = 0; i < dims.size(); i++){
-        if(i != uncontracted_mode - 1) size *= dims[i]; // FIX: added semicolon and correct logic
+        if(i != mode - 1) size *= dims[i]; // FIX: added semicolon and correct logic
     }
     
     float diff = 0.0f;
