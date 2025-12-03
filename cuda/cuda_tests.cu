@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <algorithm>
 #include <cmath>
+#include <chrono>
 #include <iomanip>
 
 #include "tmm_3d.cuh"
@@ -54,10 +55,18 @@ template <typename T, typename S>
 void run_ttms(const LaunchConfig& cfg, int block_size) {
     const double total_entries = static_cast<double>(cfg.dims[0]) * cfg.dims[1] * cfg.dims[2];
     const double freq = cfg.nnz / total_entries;
+    auto mat_start = std::chrono::high_resolution_clock::now();
     vector<NNZ_Entry<T>> entries = generate_block_sparse_tensor_nd<T>(
         cfg.dims, freq, 0, 100, std::max(1, cfg.dims[0] / 20), 100);
+    auto mat_end = std::chrono::high_resolution_clock::now();
 
+    auto factor_start = std::chrono::high_resolution_clock::now();
     Blco_Tensor<T, S> blco(entries, cfg.dims, cfg.decomp_rank);
+    auto factor_end = std::chrono::high_resolution_clock::now();
+    const double mat_ms = std::chrono::duration<double, std::milli>(mat_end - mat_start).count();
+    const double factor_ms = std::chrono::duration<double, std::milli>(factor_end - factor_start).count();
+    std::cout << "Matricization time: " << mat_ms << " ms | Factor init time: "
+              << factor_ms << " ms\n";
     vector<T*> fmats = blco.get_fmats();
     T* cpu_ttm = tensor_matrix_mul<T>(entries, cfg.dims, fmats[cfg.mode - 1], cfg.mode, cfg.decomp_rank);
     T* gpu_ttm = tmm_3d_cuda<T, S>(blco, cfg.mode, block_size);

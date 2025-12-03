@@ -5,6 +5,7 @@
 #include <stdexcept>
 #include <cstdint>
 #include <cstdlib>
+#include <chrono>
 
 #include "cuda_utils.cuh"
 #include "tmm_3d.cuh"
@@ -249,6 +250,7 @@ T* tmm_3d_cuda(const Blco_Tensor<T, S>& sparse_tensor,
         return empty_output;
     }
 
+    auto upload_start = std::chrono::high_resolution_clock::now();
     BLCO_BLOCK_GPU<T>* d_blocks = nullptr;
     blocks_to_gpu(d_blocks, blco_tensor, num_blocks);
 
@@ -270,6 +272,8 @@ T* tmm_3d_cuda(const Blco_Tensor<T, S>& sparse_tensor,
     T* d_output = nullptr;
     CUDA_CHECK(cudaMalloc(&d_output, output_elems * sizeof(T)));
     CUDA_CHECK(cudaMemset(d_output, 0, output_elems * sizeof(T)));
+    auto upload_end = std::chrono::high_resolution_clock::now();
+    const double upload_ms = std::chrono::duration<double, std::milli>(upload_end - upload_start).count();
 
     if (block_size <= 0) {
         block_size = 256;
@@ -280,6 +284,10 @@ T* tmm_3d_cuda(const Blco_Tensor<T, S>& sparse_tensor,
 
     const T* d_fmat_launch = d_fmats[mode - 1];
     const int warp_width = 32;
+    cudaEvent_t kernel_start, kernel_stop;
+    CUDA_CHECK(cudaEventCreate(&kernel_start));
+    CUDA_CHECK(cudaEventCreate(&kernel_stop));
+    CUDA_CHECK(cudaEventRecord(kernel_start));
     tmm_kernel_3d_sparse<T><<<dim3(static_cast<unsigned>(grid_x)),
                               dim3(static_cast<unsigned>(threads_per_block))>>>(
         mode,
@@ -292,14 +300,24 @@ T* tmm_3d_cuda(const Blco_Tensor<T, S>& sparse_tensor,
         rank,
         d_output,
         warp_width);
-    CUDA_CHECK(cudaGetLastError());
-    CUDA_CHECK(cudaDeviceSynchronize());
+    CUDA_CHECK(cudaEventRecord(kernel_stop));
+    CUDA_CHECK(cudaEventSynchronize(kernel_stop));
+    float kernel_ms = 0.0f;
+    CUDA_CHECK(cudaEventElapsedTime(&kernel_ms, kernel_start, kernel_stop));
 
     T* host_output = static_cast<T*>(malloc(output_elems * sizeof(T)));
+    cudaEvent_t download_start, download_stop;
+    CUDA_CHECK(cudaEventCreate(&download_start));
+    CUDA_CHECK(cudaEventCreate(&download_stop));
+    CUDA_CHECK(cudaEventRecord(download_start));
     CUDA_CHECK(cudaMemcpy(host_output,
                           d_output,
                           output_elems * sizeof(T),
                           cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaEventRecord(download_stop));
+    CUDA_CHECK(cudaEventSynchronize(download_stop));
+    float download_ms = 0.0f;
+    CUDA_CHECK(cudaEventElapsedTime(&download_ms, download_start, download_stop));
 
     free_blocks_from_gpu(d_blocks, num_blocks);
     for (int i = 0; i < 3; ++i) {
@@ -308,6 +326,15 @@ T* tmm_3d_cuda(const Blco_Tensor<T, S>& sparse_tensor,
     CUDA_CHECK(cudaFree(d_dims));
     CUDA_CHECK(cudaFree(d_masks));
     CUDA_CHECK(cudaFree(d_output));
+
+    CUDA_CHECK(cudaEventDestroy(kernel_start));
+    CUDA_CHECK(cudaEventDestroy(kernel_stop));
+    CUDA_CHECK(cudaEventDestroy(download_start));
+    CUDA_CHECK(cudaEventDestroy(download_stop));
+
+    std::cout << "TMM GPU timings (ms) upload=" << upload_ms
+              << " kernel=" << kernel_ms
+              << " download=" << download_ms << "\n";
 
     return host_output;
 }
@@ -338,6 +365,7 @@ T* tucker_compute_core_3d_cuda(const Blco_Tensor<T, S>& sparse_tensor,
         return empty_output;
     }
 
+    auto upload_start = std::chrono::high_resolution_clock::now();
     BLCO_BLOCK_GPU<T>* d_blocks = nullptr;
     blocks_to_gpu(d_blocks, blco_tensor, num_blocks);
 
@@ -359,6 +387,8 @@ T* tucker_compute_core_3d_cuda(const Blco_Tensor<T, S>& sparse_tensor,
     T* d_output = nullptr;
     CUDA_CHECK(cudaMalloc(&d_output, output_elems * sizeof(T)));
     CUDA_CHECK(cudaMemset(d_output, 0, output_elems * sizeof(T)));
+    auto upload_end = std::chrono::high_resolution_clock::now();
+    const double upload_ms = std::chrono::duration<double, std::milli>(upload_end - upload_start).count();
 
     if (block_size <= 0) {
         block_size = 256;
@@ -371,6 +401,10 @@ T* tucker_compute_core_3d_cuda(const Blco_Tensor<T, S>& sparse_tensor,
     const size_t shared_bytes =
         std::min(max_shared, output_elems * sizeof(T));
 
+    cudaEvent_t kernel_start, kernel_stop;
+    CUDA_CHECK(cudaEventCreate(&kernel_start));
+    CUDA_CHECK(cudaEventCreate(&kernel_stop));
+    CUDA_CHECK(cudaEventRecord(kernel_start));
     tucker_core_kernel_3d_sparse<T><<<dim3(static_cast<unsigned>(grid_x)),
                                       dim3(static_cast<unsigned>(threads_per_block)),
                                       shared_bytes>>>(
@@ -384,14 +418,24 @@ T* tucker_compute_core_3d_cuda(const Blco_Tensor<T, S>& sparse_tensor,
         num_blocks,
         rank,
         d_output);
-    CUDA_CHECK(cudaGetLastError());
-    CUDA_CHECK(cudaDeviceSynchronize());
+    CUDA_CHECK(cudaEventRecord(kernel_stop));
+    CUDA_CHECK(cudaEventSynchronize(kernel_stop));
+    float kernel_ms = 0.0f;
+    CUDA_CHECK(cudaEventElapsedTime(&kernel_ms, kernel_start, kernel_stop));
 
     T* host_output = static_cast<T*>(malloc(output_elems * sizeof(T)));
+    cudaEvent_t download_start, download_stop;
+    CUDA_CHECK(cudaEventCreate(&download_start));
+    CUDA_CHECK(cudaEventCreate(&download_stop));
+    CUDA_CHECK(cudaEventRecord(download_start));
     CUDA_CHECK(cudaMemcpy(host_output,
                           d_output,
                           output_elems * sizeof(T),
                           cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaEventRecord(download_stop));
+    CUDA_CHECK(cudaEventSynchronize(download_stop));
+    float download_ms = 0.0f;
+    CUDA_CHECK(cudaEventElapsedTime(&download_ms, download_start, download_stop));
 
     free_blocks_from_gpu(d_blocks, num_blocks);
     for (int i = 0; i < 3; ++i) {
@@ -400,6 +444,15 @@ T* tucker_compute_core_3d_cuda(const Blco_Tensor<T, S>& sparse_tensor,
     CUDA_CHECK(cudaFree(d_output));
     CUDA_CHECK(cudaFree(d_dims));
     CUDA_CHECK(cudaFree(d_masks));
+
+    CUDA_CHECK(cudaEventDestroy(kernel_start));
+    CUDA_CHECK(cudaEventDestroy(kernel_stop));
+    CUDA_CHECK(cudaEventDestroy(download_start));
+    CUDA_CHECK(cudaEventDestroy(download_stop));
+
+    std::cout << "Core GPU timings (ms) upload=" << upload_ms
+              << " kernel=" << kernel_ms
+              << " download=" << download_ms << "\n";
 
     return host_output;
 }
