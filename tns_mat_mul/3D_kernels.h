@@ -110,7 +110,7 @@ T* fmat, int* dims, int num_blocks, int rank, T* output_tensor, int wavefront_si
 }
 
 template<typename T, typename S>
-T* tmm_3D(const Blco_Tensor<T,S>& sparse_tensor, int mode, int block_size)
+T* tmm_3D(const Blco_Tensor<T,S>& sparse_tensor, int mode, int block_size, bool print = true)
 {
     const std::vector<BLCO_BLOCK_CPU<T>> blco_tensor = sparse_tensor.get_blco();
 
@@ -159,17 +159,17 @@ T* tmm_3D(const Blco_Tensor<T,S>& sparse_tensor, int mode, int block_size)
     dimensions.first = (non_zeros + block_size - 1) / block_size;
     T* host_output_tensor;
     T* d_output_tensor;
-    int output_size;
+    size_t output_size;
     T* d_fmat_launch = nullptr; // Pointer to the fmat being used for launch
 
     if (mode == 1) {
-        output_size = decomp_rank * dims[1] * dims[2] * dims[3];
+        output_size = (uint64_t)decomp_rank * dims[1] * dims[2];
         d_fmat_launch = d_fmat_1;
     } else if (mode == 2) {
-        output_size = dims[0] * decomp_rank * dims[2] * dims[3];
+        output_size = (uint64_t)dims[0] * decomp_rank * dims[2];
         d_fmat_launch = d_fmat_2;
     } else if (mode == 3) {
-        output_size = dims[0] * dims[1] * decomp_rank * dims[3];
+        output_size = (uint64_t)dims[0] * dims[1] * decomp_rank;
         d_fmat_launch = d_fmat_3;
     } else {
         return nullptr;
@@ -181,11 +181,11 @@ T* tmm_3D(const Blco_Tensor<T,S>& sparse_tensor, int mode, int block_size)
     HIP_CHECK(hipMemcpy(d_output_tensor, host_output_tensor, sizeof(T) * output_size, hipMemcpyHostToDevice));
 
     hipEvent_t start, stop;
-    hipEventCreate(&start);
-    hipEventCreate(&stop);
+    HIP_CHECK(hipEventCreate(&start));
+    HIP_CHECK(hipEventCreate(&stop));
 
     // Record start
-    hipEventRecord(start, 0);
+    HIP_CHECK(hipEventRecord(start, 0));
 
     // Launch the 3D kernel
     hipLaunchKernelGGL(
@@ -195,14 +195,16 @@ T* tmm_3D(const Blco_Tensor<T,S>& sparse_tensor, int mode, int block_size)
     );
 
     // Record stop
-    hipEventRecord(stop, 0);
-    hipEventSynchronize(stop);
+    HIP_CHECK(hipEventRecord(stop, 0));
+    HIP_CHECK(hipEventSynchronize(stop));
 
     // Compute elapsed time in ms
     float milliseconds = 0.0f;
-    hipEventElapsedTime(&milliseconds, start, stop);
+    HIP_CHECK(hipEventElapsedTime(&milliseconds, start, stop));
 
-    std::cout << "Kernel Duration: " << milliseconds << " ms\n";
+    if(print) std::cout << "Kernel Duration: " << milliseconds << " ms\n";
+
+    HIP_CHECK(hipMemcpy(host_output_tensor, d_output_tensor, sizeof(T) * output_size, hipMemcpyDeviceToHost));
 
     // Free device memory
     free_blocks_from_gpu(d_input_tensor,num_blocks);
@@ -220,8 +222,8 @@ T* tmm_3D(const Blco_Tensor<T,S>& sparse_tensor, int mode, int block_size)
 template<typename T>
 __global__ void tucker_core_kernel_3D_sparse(
     BLCO_BLOCK_GPU<T>* input_tensor, uint64_t nnz, uint64_t* masks, 
-    T* d_U1, T* d_U2, T* d_U3, // Factor matrices for all 3 modes (U1, U2, U3)
-    int* dims, int num_blocks, int rank, T* output_tensor, int wavefront_size = 64) 
+    T* d_U1, T* d_U2, T* d_U3, int* dims, int num_blocks, int rank, 
+    T* output_tensor, int shmem_size, int wavefront_size = 64) 
 {
     int global_idx = blockIdx.x * blockDim.x + threadIdx.x;
     int block_idx = threadIdx.x;
@@ -287,7 +289,10 @@ __global__ void tucker_core_kernel_3D_sparse(
                 // Core Tensor Row-Major Indexing (R1 x R2 x R3)
                 // Index = r1 * R2 * R3 + r2 * R3 + r3
                 int output_index = r1 * R2 * R3 + r2 * R3 + r3;
-                T* output_address = &(block_tensor[output_index]);
+
+                T* output_address;
+                if(output_index < shmem_size) output_address = &(block_tensor[output_index]);
+                else output_address = &(output_tensor[output_index]);
 
                 if constexpr (std::is_same_v<T, double>) {
                     atomicAdd_f64(output_address, contrib);
@@ -301,7 +306,7 @@ __global__ void tucker_core_kernel_3D_sparse(
         }
     }
 
-    for(int i = block_idx; i < output_size; i += blockDim.x){
+    for(int i = block_idx; i < shmem_size; i += blockDim.x){
         T output = block_tensor[i];
         T* output_address = &(output_tensor[i]);
         if constexpr (std::is_same_v<T, double>) {
@@ -318,7 +323,7 @@ __global__ void tucker_core_kernel_3D_sparse(
 
 
 template<typename T, typename S>
-T* tucker_compute_core_3D(const Blco_Tensor<T,S>& sparse_tensor, int block_size)
+T* tucker_compute_core_3D(const Blco_Tensor<T,S>& sparse_tensor, int block_size, bool print = true)
 {
     const std::vector<BLCO_BLOCK_CPU<T>> blco_tensor = sparse_tensor.get_blco();
 
@@ -367,12 +372,12 @@ T* tucker_compute_core_3D(const Blco_Tensor<T,S>& sparse_tensor, int block_size)
     dimensions.first = (non_zeros + block_size - 1) / block_size;
     T* host_output_tensor;
     T* d_output_tensor;
-    int output_size;
+    uint64_t output_size;
 
     // --- Core Tensor Output Size Calculation ---
     // The Core Tensor G has dimensions R1 x R2 x R3.
     // Assuming R1 = R2 = R3 = decomp_rank.
-    output_size = decomp_rank * decomp_rank * decomp_rank;
+    output_size = (uint64_t)decomp_rank * decomp_rank * decomp_rank;
 
     // Allocate and initialize output memory for the Core Tensor G
     host_output_tensor = (T*)calloc(output_size, sizeof(T));
@@ -381,13 +386,14 @@ T* tucker_compute_core_3D(const Blco_Tensor<T,S>& sparse_tensor, int block_size)
     
     size_t max_shmem = getMaxSharedMemory();
     size_t shared_mem_bytes = std::min(sizeof(T) * output_size, max_shmem);
+    int store_size = shared_mem_bytes / sizeof(T); //Number of elements we can store in shared memory
 
     hipEvent_t start, stop;
-    hipEventCreate(&start);
-    hipEventCreate(&stop);
+    HIP_CHECK(hipEventCreate(&start));
+    HIP_CHECK(hipEventCreate(&stop));
 
     // Record start
-    hipEventRecord(start, 0);
+    HIP_CHECK(hipEventRecord(start, 0));
 
     // Launch the Core Tensor kernel (Note: Removed 'mode' and replaced single fmat with all three)
     hipLaunchKernelGGL(
@@ -397,18 +403,18 @@ T* tucker_compute_core_3D(const Blco_Tensor<T,S>& sparse_tensor, int block_size)
         0, // Stream
         d_input_tensor, non_zeros, d_masks, 
         d_fmat_1, d_fmat_2, d_fmat_3, // All three factor matrices passed
-        device_dims, num_blocks, decomp_rank, d_output_tensor
+        device_dims, num_blocks, decomp_rank, d_output_tensor, store_size
     );
 
     // Record stop
-    hipEventRecord(stop, 0);
-    hipEventSynchronize(stop);
+    HIP_CHECK(hipEventRecord(stop, 0));
+    HIP_CHECK(hipEventSynchronize(stop));
 
     // Compute elapsed time in ms
     float milliseconds = 0.0f;
-    hipEventElapsedTime(&milliseconds, start, stop);
+    HIP_CHECK(hipEventElapsedTime(&milliseconds, start, stop));
 
-    std::cout << "Kernel Duration: " << milliseconds << " ms\n";
+    if(print) std::cout << "Kernel Duration: " << milliseconds << " ms\n";
     
     // Copy result back
     HIP_CHECK(hipMemcpy(host_output_tensor, d_output_tensor, sizeof(T) * output_size, hipMemcpyDeviceToHost));
@@ -426,18 +432,18 @@ T* tucker_compute_core_3D(const Blco_Tensor<T,S>& sparse_tensor, int block_size)
 }
 
 //======================================================================
-// Contracted Matrix calculations
+// Multimode contractions (TMM where all modes but one get contracted)
 //======================================================================
 template<typename T>
-__global__ void tucker_ttm_contraction_kernel_3D_sparse(
+__global__ void multimode_contraction_kernel_3D_sparse(
     BLCO_BLOCK_GPU<T>* input_tensor, uint64_t nnz, uint64_t* masks, 
     T* d_U1, T* d_U2, T* d_U3, int* dims, 
     int num_blocks, int rank, T* output_Ym, // Output is the dense matrix Y_m
-    int solved_mode, // New argument: The mode (1-indexed) currently being solved for
+    int uncontracted_mode, int shmem_size,
     int wavefront_size = 64) 
 {
     // Convert 1-indexed mode to 0-indexed for array access
-    const int solved_mode_idx = solved_mode - 1; 
+    const int uncontracted_mode_idx = uncontracted_mode - 1; 
 
     int global_idx = blockIdx.x * blockDim.x + threadIdx.x;
     int block_idx = threadIdx.x;
@@ -447,11 +453,11 @@ __global__ void tucker_ttm_contraction_kernel_3D_sparse(
     const int R2 = rank;
     const int R3 = rank;
     
-    // Calculate the output matrix dimensions dynamically based on solved_mode
-    int Im = dims[solved_mode_idx]; 
+    // Calculate the output matrix dimensions dynamically based on uncontracted_mode
+    int Im = dims[uncontracted_mode_idx]; 
     int output_cols;
 
-    if (solved_mode_idx >= 0 && solved_mode_idx < 5) {
+    if (uncontracted_mode_idx >= 0 && uncontracted_mode_idx < 5) {
         // Correct calculation: product of all ranks / rank of the solved mode
         int total_rank_product = R1 * R2 * R3;
         output_cols = total_rank_product / rank;
@@ -515,7 +521,7 @@ __global__ void tucker_ttm_contraction_kernel_3D_sparse(
     //Fill out arrays
     int write_idx = 0; // Index for filling the compressed arrays
     for (int k = 0; k < 3; ++k) {
-        if (k != solved_mode_idx) {
+        if (k != uncontracted_mode_idx) {
             contracted_ranks[write_idx] = all_ranks[k];
             input_indices[write_idx] = *all_indices[k];
             factor_matrices[write_idx] = all_factor_mats[k];
@@ -523,7 +529,7 @@ __global__ void tucker_ttm_contraction_kernel_3D_sparse(
         }
     }
     
-    // Assign consolidated variables (Using C1-C3 for contracted ranks)
+    // Assign consolidated variables (Using C1-C2 for contracted ranks)
     const int C1 = contracted_ranks[0];
     const int C2 = contracted_ranks[1];
 
@@ -539,7 +545,7 @@ __global__ void tucker_ttm_contraction_kernel_3D_sparse(
     const int flattened_output_cols = C1 * C2; 
     
     // Determine the output row index (i_m)
-    const int output_row_index = *(all_indices[solved_mode_idx]);
+    const int output_row_index = *(all_indices[uncontracted_mode_idx]);
 
     // --- 3. Generalized Contraction Loop (4 Nested Loops) ---
     for(int r1 = 0; r1 < C1; r1++){
@@ -558,7 +564,10 @@ __global__ void tucker_ttm_contraction_kernel_3D_sparse(
                     // Row-Major Index in Y_m: Row * Total_Cols + Col
                     int output_index = output_row_index * flattened_output_cols + output_col_index;
                     
-                    T* output_address = &(block_Ym[output_index]);
+                    T* output_address;
+                    if(output_index < shmem_size) output_address = &(block_Ym[output_index]);
+                    else output_address = &(output_Ym[output_index]);
+
                     // Atomic add (using shared memory reduction)
                     if constexpr (std::is_same_v<T, double>) { atomicAdd_f64(output_address, contrib); } 
                     else if constexpr (std::is_same_v<T, float>) { atomicAdd(output_address, contrib); } 
@@ -568,7 +577,7 @@ __global__ void tucker_ttm_contraction_kernel_3D_sparse(
 
     // 4. Global Atomic Write (Shared Memory Reduction)
     // Write results from shared memory (block_Ym) to global memory (output_Ym)
-    for(int i = block_idx; i < output_size; i += blockDim.x){
+    for(int i = block_idx; i < shmem_size; i += blockDim.x){
         T output = block_Ym[i];
         T* output_address = &(output_Ym[i]);
         if constexpr (std::is_same_v<T, double>) {
@@ -584,7 +593,8 @@ __global__ void tucker_ttm_contraction_kernel_3D_sparse(
 }
 
 template<typename T, typename S>
-T* tucker_compute_contraction_3D(const Blco_Tensor<T,S>& sparse_tensor, int block_size, int mode)
+T* contract_n_minus_one_modes_3D(const Blco_Tensor<T,S>& sparse_tensor, int block_size, 
+int mode, bool print = true)
 {
     const std::vector<BLCO_BLOCK_CPU<T>> blco_tensor = sparse_tensor.get_blco();
 
@@ -633,12 +643,14 @@ T* tucker_compute_contraction_3D(const Blco_Tensor<T,S>& sparse_tensor, int bloc
     dimensions.first = (non_zeros + block_size - 1) / block_size;
     T* host_output_tensor;
     T* d_output_tensor;
-    int output_size;
+    uint64_t output_size;
 
-    // --- Core Tensor Output Size Calculation ---
-    // The Core Tensor G has dimensions R1 x R2 x R3 x R4.
-    // Assuming R1 = R2 = R3 = R4 = decomp_rank.
-    output_size = decomp_rank * decomp_rank * decomp_rank * decomp_rank;
+    switch (mode) {
+        case 1: output_size = (uint64_t)dims[0] * decomp_rank * decomp_rank; break; 
+        case 2: output_size = (uint64_t)dims[1] * decomp_rank * decomp_rank; break; 
+        case 3: output_size = (uint64_t)dims[2] * decomp_rank * decomp_rank; break; 
+        default: break;
+    }
 
     // Allocate and initialize output memory for the Core Tensor G
     host_output_tensor = (T*)calloc(output_size, sizeof(T));
@@ -647,34 +659,35 @@ T* tucker_compute_contraction_3D(const Blco_Tensor<T,S>& sparse_tensor, int bloc
     
     size_t max_shmem = getMaxSharedMemory();
     size_t shared_mem_bytes = std::min(sizeof(T) * output_size, max_shmem);
+    int store_size = shared_mem_bytes / sizeof(T);
 
     hipEvent_t start, stop;
-    hipEventCreate(&start);
-    hipEventCreate(&stop);
+    HIP_CHECK(hipEventCreate(&start));
+    HIP_CHECK(hipEventCreate(&stop));
 
     // Record start
-    hipEventRecord(start, 0);
+    HIP_CHECK(hipEventRecord(start, 0));
 
     // Launch the contraction Tensor kernel (Note: Removed 'mode' and replaced single fmat with all three)
     hipLaunchKernelGGL(
-        tucker_ttm_contraction_kernel_3D_sparse<T>,  
+        multimode_contraction_kernel_3D_sparse<T>,  
         dim3(dimensions.first), dim3(dimensions.second), 
         shared_mem_bytes, // Shared memory size 
         0, // Stream
         d_input_tensor, non_zeros, d_masks, 
         d_fmat_1, d_fmat_2, d_fmat_3, // All three factor matrices passed
-        device_dims, num_blocks, decomp_rank, d_output_tensor, mode
+        device_dims, num_blocks, decomp_rank, d_output_tensor, mode, store_size
     );
 
     // Record stop
-    hipEventRecord(stop, 0);
-    hipEventSynchronize(stop);
+    HIP_CHECK(hipEventRecord(stop, 0));
+    HIP_CHECK(hipEventSynchronize(stop));
 
     // Compute elapsed time in ms
     float milliseconds = 0.0f;
-    hipEventElapsedTime(&milliseconds, start, stop);
+    HIP_CHECK(hipEventElapsedTime(&milliseconds, start, stop));
 
-    std::cout << "Kernel Duration: " << milliseconds << " ms\n";
+    if(print) std::cout << "Kernel Duration: " << milliseconds << " ms\n";
     
     // Copy result back
     HIP_CHECK(hipMemcpy(host_output_tensor, d_output_tensor, sizeof(T) * output_size, hipMemcpyDeviceToHost));
