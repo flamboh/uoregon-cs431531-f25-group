@@ -16,7 +16,7 @@
 
 //3D implementation
 template<typename T, typename S>
-std::vector<T> tmm_3D_cpu(int mode, const std::vector<NNZ_Entry<T>>& sparse_tensor, 
+std::vector<T> tmm_3D_cpu(int mode, const std::vector<NNZ_Entry<T>>& sparse_tensor,
 const std::vector<int>& dims, T* fmat, int decomp_rank)
 {
     // --- 1. Validation and Dimension Setup ---
@@ -29,7 +29,7 @@ const std::vector<int>& dims, T* fmat, int decomp_rank)
     const int R = decomp_rank; // New dimension (Rank)
 
     // Original dimension being contracted (e.g., I1 for mode 0)
-    const int I_mode = dims[mode - 1]; 
+    const int I_mode = dims[mode - 1];
 
     // --- 2. Determine Output Tensor Dimensions and Initialize ---
     int B_dims[3];
@@ -49,46 +49,46 @@ const std::vector<int>& dims, T* fmat, int decomp_rank)
     for (const auto& entry : sparse_tensor) {
         if (entry.indices.size() != 3) continue;
 
-        const int i1 = entry.indices[0]; 
-        const int i2 = entry.indices[1]; 
+        const int i1 = entry.indices[0];
+        const int i2 = entry.indices[1];
         const int i3 = entry.indices[2];
         const T a_val = entry.value;
 
         // Ensure indices are within bounds
         if (i1 < 0 || i1 >= I1 || i2 < 0 || i2 >= I2 || i3 < 0 || i3 >= I3) {
-            continue; 
+            continue;
         }
 
         // --- Core TMM Update ---
         for (int r = 0; r < R; ++r) {
-            
+
             // --- A. Get F Index ---
             // F is I_mode x R, Row-Major. F(row, col) = row * R + col.
             // row is the index from the input tensor A (i1, i2, or i3).
             // col is the new dimension index (r).
-            int F_row_idx; 
+            int F_row_idx;
             switch (mode) {
                 case 1: F_row_idx = i1; break;
                 case 2: F_row_idx = i2; break;
                 case 3: F_row_idx = i3; break;
                 default: F_row_idx = 0; // Should not happen due to validation
             }
-        
+
             // FIX: The index calculation now assumes Column-Major storage (r * I_mode + i_mode)
-            const size_t F_idx = (size_t)r * I_mode + F_row_idx; 
+            const size_t F_idx = (size_t)r * I_mode + F_row_idx;
             const T f_val = fmat[F_idx];
-            
+
             // --- B. Get B Index ---
             // The output tensor B is B_I1 x B_I2 x B_I3, Row-Major.
             // B(idx0, idx1, idx2) = idx0 * (B_I2 * B_I3) + idx1 * B_I3 + idx2
-            
+
             // The indices of B are the original indices (i1, i2, i3) with 'mode' replaced by 'r'.
             int B_idx0 = (mode == 1) ? r : i1;
             int B_idx1 = (mode == 2) ? r : i2;
             int B_idx2 = (mode == 3) ? r : i3;
 
             const size_t B_idx = (size_t)B_idx0 * (B_I2 * B_I3) + B_idx1 * B_I3 + B_idx2;
-            
+
             // TMM Update: B(...) += A(...) * F(...)
             output_tensor[B_idx] += a_val * f_val;
         }
@@ -99,7 +99,7 @@ const std::vector<int>& dims, T* fmat, int decomp_rank)
 
 //4D implementation
 template<typename T, typename S>
-std::vector<T> tmm_4D_cpu(int mode, const std::vector<NNZ_Entry<T>>& sparse_tensor, 
+std::vector<T> tmm_4D_cpu(int mode, const std::vector<NNZ_Entry<T>>& sparse_tensor,
 const std::vector<int>& dims, T* fmat, int decomp_rank)
 {
     // --- 1. Validation and Dimension Setup ---
@@ -113,7 +113,7 @@ const std::vector<int>& dims, T* fmat, int decomp_rank)
     const int R = decomp_rank; // New dimension (Rank)
 
     // Original dimension being contracted (e.g., I1 for mode 1)
-    const int I_mode = dims[mode - 1]; 
+    const int I_mode = dims[mode - 1];
 
     // --- 2. Determine Output Tensor Dimensions and Initialize ---
     int B_dims[4];
@@ -129,42 +129,42 @@ const std::vector<int>& dims, T* fmat, int decomp_rank)
 
     // Total size: B_I1 * B_I2 * B_I3 * B_I4
     const size_t output_size = (size_t)B_I1 * B_I2 * B_I3 * B_I4;
-    std::vector<T> output_tensor(output_size, T{0}); 
+    std::vector<T> output_tensor(output_size, T{0});
 
     // --- 3. Perform TMM using Sparse Iteration ---
     // The core loop iterates over the non-zero entries of A.
     for (const auto& entry : sparse_tensor) {
         if (entry.indices.size() != 4) continue;
 
-        const int i1 = entry.indices[0]; 
-        const int i2 = entry.indices[1]; 
+        const int i1 = entry.indices[0];
+        const int i2 = entry.indices[1];
         const int i3 = entry.indices[2];
         const int i4 = entry.indices[3]; // New 4th index
         const T a_val = entry.value;
 
         // Ensure indices are within bounds
         if (i1 < 0 || i1 >= I1 || i2 < 0 || i2 >= I2 || i3 < 0 || i3 >= I3 || i4 < 0 || i4 >= I4) {
-            continue; 
+            continue;
         }
 
         // --- Core TMM Update ---
         for (int r = 0; r < R; ++r) {
-            
+
             // --- A. Get F Index (Row-Major F: I_mode x R) ---
             // The row of F is the index of the dimension being contracted.
-            int F_row_idx; 
+            int F_row_idx;
             switch (mode) {
                 case 1: F_row_idx = i1; break;
                 case 2: F_row_idx = i2; break;
                 case 3: F_row_idx = i3; break;
                 case 4: F_row_idx = i4; break; // New case for 4th dimension
-                default: F_row_idx = 0; 
+                default: F_row_idx = 0;
             }
             const size_t F_idx = (size_t)r * I_mode + F_row_idx; 
             const T f_val = fmat[F_idx];
-            
+
             // --- B. Get B Index (Row-Major B: B_I1 x B_I2 x B_I3 x B_I4) ---
-            
+
             // The indices of B are the original indices (i1, i2, i3, i4) with 'mode' replaced by 'r'.
             int B_idx0 = (mode == 1) ? r : i1;
             int B_idx1 = (mode == 2) ? r : i2;
@@ -173,11 +173,11 @@ const std::vector<int>& dims, T* fmat, int decomp_rank)
 
             // Row-Major Index Calculation for 4D:
             // idx = idx0 * (D2*D3*D4) + idx1 * (D3*D4) + idx2 * (D4) + idx3
-            const size_t B_idx = (size_t)B_idx0 * (B_I2 * B_I3 * B_I4) + 
-                                 B_idx1 * (B_I3 * B_I4) + 
-                                 B_idx2 * B_I4 + 
+            const size_t B_idx = (size_t)B_idx0 * (B_I2 * B_I3 * B_I4) +
+                                 B_idx1 * (B_I3 * B_I4) +
+                                 B_idx2 * B_I4 +
                                  B_idx3;
-            
+
             // TMM Update: B(...) += A(...) * F(...)
             output_tensor[B_idx] += a_val * f_val;
         }
@@ -303,7 +303,7 @@ std::vector<T> tmm_5D_cpu(int mode, const std::vector<NNZ_Entry<T>>& sparse_tens
 // Core Tensor Calculation (Tucker Decomposition)
 //======================================================================
 template<typename T, typename S>
-std::vector<T> core_tensor_3D_cpu(const std::vector<NNZ_Entry<T>>& sparse_tensor, const std::vector<int>& dims, 
+std::vector<T> core_tensor_3D_cpu(const std::vector<NNZ_Entry<T>>& sparse_tensor, const std::vector<int>& dims,
 const std::vector<T*>& fmats, int decomp_rank)
 {
     // --- 1. Validation and Dimension Setup ---
@@ -319,23 +319,23 @@ const std::vector<T*>& fmats, int decomp_rank)
     // Output G is R x R x R. Stored in Row-Major order.
     // Index: G[r1 * R*R + r2 * R + r3]
     const size_t output_size = (size_t)R * R * R;
-    std::vector<T> core_tensor_G(output_size, T{0}); 
+    std::vector<T> core_tensor_G(output_size, T{0});
 
     // --- 3. Perform Simultaneous Contractions ---
     // The calculation is G(r1, r2, r3) += A(i1, i2, i3) * F1^T(r1, i1) * F2^T(r2, i2) * F3^T(r3, i3)
-    
+
     // We iterate ONLY over the non-zero entries (i1, i2, i3) of the input A.
     for (const auto& entry : sparse_tensor) {
         if (entry.indices.size() != 3) continue;
 
-        const int i1 = entry.indices[0]; 
-        const int i2 = entry.indices[1]; 
+        const int i1 = entry.indices[0];
+        const int i2 = entry.indices[1];
         const int i3 = entry.indices[2];
         const T a_val = entry.value;
 
         // Ensure indices are within bounds
         if (i1 < 0 || i1 >= I1 || i2 < 0 || i2 >= I2 || i3 < 0 || i3 >= I3) {
-            continue; 
+            continue;
         }
 
         // --- Core Accumulation Loop ---
@@ -364,7 +364,7 @@ const std::vector<T*>& fmats, int decomp_rank)
                     // --- B. Get G Index (Row-Major G: R x R x R) ---
                     // G(r1, r2, r3) corresponds to index = r1 * (R * R) + r2 * R + r3
                     const size_t G_idx = (size_t)r1 * (R * R) + r2 * R + r3;
-                    
+
                     // Accumulation: G(...) += A(...) * F1^T(...) * F2^T(...) * F3^T(...)
                     core_tensor_G[G_idx] += a_val * f1_val * f2_val * f3_val;
                 }
@@ -376,7 +376,7 @@ const std::vector<T*>& fmats, int decomp_rank)
 }
 
 template<typename T, typename S>
-std::vector<T> core_tensor_4D_cpu(const std::vector<NNZ_Entry<T>>& sparse_tensor, const std::vector<int>& dims, 
+std::vector<T> core_tensor_4D_cpu(const std::vector<NNZ_Entry<T>>& sparse_tensor, const std::vector<int>& dims,
                                  const std::vector<T*>& fmats, int decomp_rank)
 {
     // --- 1. Validation and Dimension Setup ---
@@ -393,21 +393,21 @@ std::vector<T> core_tensor_4D_cpu(const std::vector<NNZ_Entry<T>>& sparse_tensor
     const size_t R_sq = (size_t)R * R;
     const size_t R_cub = R_sq * R;
     const size_t output_size = R_cub * R; // R^4
-    std::vector<T> core_tensor_G(output_size, T{0}); 
+    std::vector<T> core_tensor_G(output_size, T{0});
 
     // --- 3. Perform Simultaneous Contractions ---
     for (const auto& entry : sparse_tensor) {
         if (entry.indices.size() != 4) continue;
 
-        const int i1 = entry.indices[0]; 
-        const int i2 = entry.indices[1]; 
+        const int i1 = entry.indices[0];
+        const int i2 = entry.indices[1];
         const int i3 = entry.indices[2];
         const int i4 = entry.indices[3];
         const T a_val = entry.value;
 
         // Ensure indices are within bounds
         if (i1 < 0 || i1 >= I1 || i2 < 0 || i2 >= I2 || i3 < 0 || i3 >= I3 || i4 < 0 || i4 >= I4) {
-            continue; 
+            continue;
         }
 
         // --- Core Accumulation Loop ---
@@ -424,7 +424,7 @@ std::vector<T> core_tensor_4D_cpu(const std::vector<NNZ_Entry<T>>& sparse_tensor
                         // --- B. Get G Index (Row-Major G: R x R x R x R) ---
                         // Index = r1 * R^3 + r2 * R^2 + r3 * R + r4
                         const size_t G_idx = r1 * R_cub + r2 * R_sq + r3 * R + r4;
-                        
+
                         // Accumulation
                         core_tensor_G[G_idx] += a_val * f1_val * f2_val * f3_val * f4_val;
                     }
@@ -546,7 +546,7 @@ void print_3d_tensor_from_flat(T* arr, const std::vector<int>& j_dims)
         std::cout << "Error: Cannot print as 3D tensor. Dimension count is less than 3." << std::endl;
         return;
     }
-    
+
     // For a 3D tensor (J1 x J2 x J3)
     const int J1 = j_dims[0];
     const int J2 = j_dims[1];
@@ -558,7 +558,7 @@ void print_3d_tensor_from_flat(T* arr, const std::vector<int>& j_dims)
             for (int k = 0; k < J3; ++k) { // Column dimension
                 // Row-major index calculation: i * (J2*J3) + j * J3 + k
                 uint64_t index = (uint64_t)i * J2 * J3 + (uint64_t)j * J3 + (uint64_t)k;
-                
+
                 // Print the value with some padding
                 std::cout << arr[index] << "\t";
             }
@@ -588,7 +588,7 @@ bool compare_tmm_arrays(T* arr1, T* arr2, std::vector<int> dims, int decomp_rank
 
     // 2. Calculate the total size
     uint64_t size = (uint64_t)J1 * J2 * J3;
-    
+
     // Safety check for size calculation
     if (size == 0) {
         std::cerr << "Error: Calculated output size is zero. Check dimensions and rank." << std::endl;
@@ -599,7 +599,7 @@ bool compare_tmm_arrays(T* arr1, T* arr2, std::vector<int> dims, int decomp_rank
     for(uint64_t i = 0; i < size; i++){
         if(arr1[i] != arr2[i]) return false;
     }
-    
+
     return true;
 }
 
@@ -612,7 +612,7 @@ float compare_tmm_arrays_float(T* arr1, T* arr2, std::vector<int> dims, int deco
     for(int i = 0; i < dims.size(); i++){
         if(i != mode - 1) size *= dims[i]; // FIX: added semicolon and correct logic
     }
-    
+
     float diff = 0.0f;
     for(uint64_t i = 0; i < size; i++){
         diff += std::abs(arr1[i] - arr2[i]);
@@ -647,7 +647,7 @@ float compare_multimode_contraction_arrays_float(T* arr1, T* arr2, std::vector<i
     for(int i = 0; i < dims.size(); i++){
         if(i != mode - 1) size *= decomp_rank;
     }
-    
+
     float diff = 0.0f;
     for(uint64_t i = 0; i < size; i++){
         diff += std::abs(arr1[i] - arr2[i]);

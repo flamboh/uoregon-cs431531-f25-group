@@ -37,3 +37,6 @@ cmake-build-*/
 logs/
 tensors/
 
+AGENTS.md
+
+**/output
