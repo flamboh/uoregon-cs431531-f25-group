@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --account=cis431_531
-#SBATCH --job-name=tucker_gpu   ### Job Name
-#SBATCH --output=output/tucker_%A.out  ### File in which to store job output
-#SBATCH --error=output/tucker_%A.err   ### File in which to store job error messages
+#SBATCH --job-name=spmv_gpu   ### Job Name
+#SBATCH --output=output/spmv_%A.out  ### File in which to store job output
+#SBATCH --error=output/spmv_%A.err   ### File in which to store job error messages
 #SBATCH --partition=gpu       ### Quality of Service (like a queue in PBS)
 #SBATCH --time=1-00:00:00     ### Wall clock time limit in Days-HH:MM:SS
 #SBATCH --nodes=1             ### Node count required for the job
@@ -11,11 +11,10 @@
 #SBATCH --cpus-per-task=28    ### Number of threads per task (OMP threads)
 
 module load cuda/12.4
+module load gcc/7.3
 
 export OMP_PROC_BIND=true
 export OMP_NUM_THREADS=$SLURM_ARRAY_TASK_ID
 
-
-
-./cuda_tests 50000 0 15 2500 2500 2500 1024
-
+echo "num_threads,load_time,convert_time,cpu_csr_time,gpu_alloc_time,gpu_csr_time,gpu_ell_time,store_time"
+echo -n $OMP_NUM_THREADS, && ./spmv cant/cant.mtx cant/b.mtx ./test.mtx | python3 filter_csv.py

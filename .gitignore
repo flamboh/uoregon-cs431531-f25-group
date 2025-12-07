@@ -36,3 +36,5 @@ cmake-build-*/
 #Logs and tensor directories
 logs/
 tensors/
+
+AGENTS.md

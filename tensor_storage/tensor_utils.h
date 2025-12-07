@@ -265,7 +265,7 @@ void print_matrix(T** matrix, int rows, int cols, int width) {
 // ==========================
 
 // Print x least-significant bits of a 128-bit value
-void print_lsb_bits(__uint128_t value, int x) {
+inline void print_lsb_bits(__uint128_t value, int x) {
     if (x < 1 || x > 128) {
         std::cerr << "Error: x must be between 1 and 128\n";
         return;
@@ -278,7 +278,7 @@ void print_lsb_bits(__uint128_t value, int x) {
 }
 
 // Print x least-significant bits of a 64-bit value
-void print_uint64(uint64_t value, int x) {
+inline void print_uint64(uint64_t value, int x) {
     if (x < 1 || x > 64) {
         std::cerr << "Error: x must be between 1 and 64\n";
         return;
@@ -291,7 +291,7 @@ void print_uint64(uint64_t value, int x) {
 }
 
 // Convert 128-bit unsigned integer to scientific notation string
-std::string uint128_to_sci_string(__uint128_t value, int precision) {
+inline std::string uint128_to_sci_string(__uint128_t value, int precision) {
     if (value == 0) return "0.0e+0";
 
     __uint128_t temp = value;
@@ -313,4 +313,3 @@ std::string uint128_to_sci_string(__uint128_t value, int precision) {
 
 
 #endif
-

@@ -153,7 +153,7 @@ __global__ void tucker_core_kernel_3d_sparse(BLCO_BLOCK_GPU<T>* input_tensor,
         static_cast<uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     const int local_idx = threadIdx.x;
 
-    extern __shared__ __align__(sizeof(T)) unsigned char smem[];
+    extern __shared__ unsigned char smem[];
     T* block_tensor = reinterpret_cast<T*>(smem);
     const int output_size = rank * rank * rank;
 
@@ -215,11 +215,107 @@ __global__ void tucker_core_kernel_3d_sparse(BLCO_BLOCK_GPU<T>* input_tensor,
     }
 }
 
+template <typename T>
+__global__ void multimode_contraction_kernel_3d_sparse(BLCO_BLOCK_GPU<T>* input_tensor,
+                                                       uint64_t nnz,
+                                                       const uint64_t* masks,
+                                                       const T* d_U1,
+                                                       const T* d_U2,
+                                                       const T* d_U3,
+                                                       const int* dims,
+                                                       int num_blocks,
+                                                       int rank,
+                                                       T* output_Ym,
+                                                       int uncontracted_mode,
+                                                       int store_size)
+{
+    extern __shared__ unsigned char smem_raw[];
+    T* block_store = reinterpret_cast<T*>(smem_raw);
+
+    const int shared_limit = store_size;
+    for (int i = threadIdx.x; i < shared_limit; i += blockDim.x) {
+        block_store[i] = 0;
+    }
+    __syncthreads();
+
+    const int uncontracted_mode_idx = uncontracted_mode - 1;
+    const uint64_t global_idx = static_cast<uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    const bool active = global_idx < nnz;
+
+    int m_indices[3] = {-1, -1, -1};
+    T thread_val = 0;
+
+    if (active) {
+        const int block_index = find_block_index(input_tensor, num_blocks);
+        const uint64_t lin_index =
+            extract_linear_index(input_tensor, static_cast<int>(global_idx), block_index);
+        thread_val = extract_value(input_tensor, block_index);
+        const int block = input_tensor[block_index].idx;
+
+        const int bit_widths[3] = {
+            ceiling_log2(dims[0]),
+            ceiling_log2(dims[1]),
+            ceiling_log2(dims[2])
+        };
+
+        m_indices[0] = extract_mode_nd(lin_index, 1, masks, bit_widths, 3, block);
+        m_indices[1] = extract_mode_nd(lin_index, 2, masks, bit_widths, 3, block);
+        m_indices[2] = extract_mode_nd(lin_index, 3, masks, bit_widths, 3, block);
+    }
+
+    const T* factors[3] = {d_U1, d_U2, d_U3};
+    const int output_cols = rank * rank;
+    const int output_row_index = m_indices[uncontracted_mode_idx];
+    const int Im = dims[uncontracted_mode_idx];
+    const int output_size = Im * output_cols;
+
+    if (active) {
+        int other_modes[2];
+        int om = 0;
+        for (int i = 0; i < 3; ++i) {
+            if (i != uncontracted_mode_idx) {
+                other_modes[om++] = i;
+            }
+        }
+
+        for (int r1 = 0; r1 < rank; ++r1) {
+            const int idx1 = m_indices[other_modes[0]];
+            const size_t f1_idx = static_cast<size_t>(r1) * dims[other_modes[0]] + idx1;
+            const T u1_val = factors[other_modes[0]][f1_idx];
+            for (int r2 = 0; r2 < rank; ++r2) {
+                const int idx2 = m_indices[other_modes[1]];
+                const size_t f2_idx = static_cast<size_t>(r2) * dims[other_modes[1]] + idx2;
+                const T u2_val = factors[other_modes[1]][f2_idx];
+                const T contrib = thread_val * u1_val * u2_val;
+                const int output_col_index = r1 * rank + r2;
+                const int output_index = output_row_index * output_cols + output_col_index;
+
+                if (output_index < store_size) {
+                    atomicAddTyped(&block_store[output_index], contrib);
+                } else {
+                    atomicAddTyped(&output_Ym[output_index], contrib);
+                }
+            }
+        }
+    }
+
+    __syncthreads();
+
+    for (int i = threadIdx.x; i < min(store_size, output_size); i += blockDim.x) {
+        const T val = block_store[i];
+        if (val != static_cast<T>(0)) {
+            atomicAddTyped(&output_Ym[i], val);
+        }
+    }
+}
+
 template <typename T, typename S>
 T* tmm_3d_cuda(const Blco_Tensor<T, S>& sparse_tensor,
                int mode,
-               int block_size)
+               int block_size,
+               bool log_timings)
 {
+    auto total_start = std::chrono::high_resolution_clock::now();
     if (mode < 1 || mode > 3) {
         throw std::invalid_argument("tmm_3d_cuda mode must be in [1,3]");
     }
@@ -332,9 +428,17 @@ T* tmm_3d_cuda(const Blco_Tensor<T, S>& sparse_tensor,
     CUDA_CHECK(cudaEventDestroy(download_start));
     CUDA_CHECK(cudaEventDestroy(download_stop));
 
-    std::cout << "TMM GPU timings (ms) upload=" << upload_ms
-              << " kernel=" << kernel_ms
-              << " download=" << download_ms << "\n";
+    if (log_timings) {
+        std::cout << "TMM GPU timings (ms) upload=" << upload_ms
+                  << " kernel=" << kernel_ms
+                  << " download=" << download_ms << "\n";
+    }
+    auto total_end = std::chrono::high_resolution_clock::now();
+    const double total_ms =
+        std::chrono::duration<double, std::milli>(total_end - total_start).count();
+    if (log_timings) {
+        std::cout << "TMM total wall time (ms): " << total_ms << "\n";
+    }
 
     return host_output;
 }
@@ -343,6 +447,7 @@ template <typename T, typename S>
 T* tucker_compute_core_3d_cuda(const Blco_Tensor<T, S>& sparse_tensor,
                                int block_size)
 {
+    auto total_start = std::chrono::high_resolution_clock::now();
     std::vector<int> dims = sparse_tensor.get_dims();
     if (dims.size() != 3) {
         throw std::runtime_error("tucker_compute_core_3d_cuda expects a 3D tensor");
@@ -453,13 +558,129 @@ T* tucker_compute_core_3d_cuda(const Blco_Tensor<T, S>& sparse_tensor,
     std::cout << "Core GPU timings (ms) upload=" << upload_ms
               << " kernel=" << kernel_ms
               << " download=" << download_ms << "\n";
+    auto total_end = std::chrono::high_resolution_clock::now();
+    const double total_ms =
+        std::chrono::duration<double, std::milli>(total_end - total_start).count();
+    std::cout << "Core total wall time (ms): " << total_ms << "\n";
+
+    return host_output;
+}
+
+template <typename T, typename S>
+T* contract_n_minus_one_modes_3d_cuda(const Blco_Tensor<T, S>& sparse_tensor,
+                                      int block_size,
+                                      int mode)
+{
+    const auto blco_tensor = sparse_tensor.get_blco();
+    std::vector<int> dims = sparse_tensor.get_dims();
+    const int rank = sparse_tensor.get_factor_rank();
+    const uint64_t nnz = sparse_tensor.get_nnz();
+    std::vector<uint64_t> masks = sparse_tensor.get_bitmasks();
+    std::vector<T*> fmats = sparse_tensor.get_fmats();
+    const int num_blocks = static_cast<int>(blco_tensor.size());
+    const int RANK_DIMS = 3;
+
+    auto upload_start = std::chrono::high_resolution_clock::now();
+    BLCO_BLOCK_GPU<T>* d_blocks = nullptr;
+    blocks_to_gpu(d_blocks, blco_tensor, num_blocks);
+
+    int* d_dims = nullptr;
+    CUDA_CHECK(cudaMalloc(&d_dims, sizeof(int) * RANK_DIMS));
+    CUDA_CHECK(cudaMemcpy(d_dims, dims.data(), sizeof(int) * RANK_DIMS, cudaMemcpyHostToDevice));
+
+    uint64_t* d_masks = nullptr;
+    CUDA_CHECK(cudaMalloc(&d_masks, sizeof(uint64_t) * RANK_DIMS));
+    CUDA_CHECK(cudaMemcpy(d_masks, masks.data(), sizeof(uint64_t) * RANK_DIMS, cudaMemcpyHostToDevice));
+
+    T* d_fmats[3] = {nullptr, nullptr, nullptr};
+    for (int i = 0; i < 3; ++i) {
+        const size_t elems = static_cast<size_t>(rank) * dims[i];
+        CUDA_CHECK(cudaMalloc(&d_fmats[i], elems * sizeof(T)));
+        CUDA_CHECK(cudaMemcpy(d_fmats[i], fmats[i], elems * sizeof(T), cudaMemcpyHostToDevice));
+    }
+
+    uint64_t output_size = 0;
+    switch (mode) {
+        case 1: output_size = static_cast<uint64_t>(dims[0]) * rank * rank; break;
+        case 2: output_size = static_cast<uint64_t>(dims[1]) * rank * rank; break;
+        case 3: output_size = static_cast<uint64_t>(dims[2]) * rank * rank; break;
+        default: break;
+    }
+
+    T* d_output = nullptr;
+    CUDA_CHECK(cudaMalloc(&d_output, output_size * sizeof(T)));
+    CUDA_CHECK(cudaMemset(d_output, 0, output_size * sizeof(T)));
+    auto upload_end = std::chrono::high_resolution_clock::now();
+    const double upload_ms = std::chrono::duration<double, std::milli>(upload_end - upload_start).count();
+
+    if (block_size <= 0) block_size = 256;
+    block_size = std::min(block_size, 1024);
+    const uint64_t threads_per_block = static_cast<uint64_t>(block_size);
+    const uint64_t grid_x = (nnz + threads_per_block - 1) / threads_per_block;
+
+    const size_t max_shared = getMaxSharedMemory();
+    const size_t shared_bytes = std::min(sizeof(T) * output_size, max_shared);
+    const int store_size = static_cast<int>(shared_bytes / sizeof(T));
+
+    cudaEvent_t kernel_start, kernel_stop;
+    CUDA_CHECK(cudaEventCreate(&kernel_start));
+    CUDA_CHECK(cudaEventCreate(&kernel_stop));
+    CUDA_CHECK(cudaEventRecord(kernel_start));
+    multimode_contraction_kernel_3d_sparse<T><<<dim3(static_cast<unsigned>(grid_x)),
+                                                dim3(static_cast<unsigned>(threads_per_block)),
+                                                store_size * sizeof(T)>>>(
+        d_blocks,
+        nnz,
+        d_masks,
+        d_fmats[0],
+        d_fmats[1],
+        d_fmats[2],
+        d_dims,
+        num_blocks,
+        rank,
+        d_output,
+        mode,
+        store_size);
+    CUDA_CHECK(cudaEventRecord(kernel_stop));
+    CUDA_CHECK(cudaEventSynchronize(kernel_stop));
+    float kernel_ms = 0.0f;
+    CUDA_CHECK(cudaEventElapsedTime(&kernel_ms, kernel_start, kernel_stop));
+
+    T* host_output = static_cast<T*>(malloc(output_size * sizeof(T)));
+    cudaEvent_t download_start, download_stop;
+    CUDA_CHECK(cudaEventCreate(&download_start));
+    CUDA_CHECK(cudaEventCreate(&download_stop));
+    CUDA_CHECK(cudaEventRecord(download_start));
+    CUDA_CHECK(cudaMemcpy(host_output, d_output, output_size * sizeof(T), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaEventRecord(download_stop));
+    CUDA_CHECK(cudaEventSynchronize(download_stop));
+    float download_ms = 0.0f;
+    CUDA_CHECK(cudaEventElapsedTime(&download_ms, download_start, download_stop));
+
+    free_blocks_from_gpu(d_blocks, num_blocks);
+    for (int i = 0; i < 3; ++i) {
+        CUDA_CHECK(cudaFree(d_fmats[i]));
+    }
+    CUDA_CHECK(cudaFree(d_dims));
+    CUDA_CHECK(cudaFree(d_masks));
+    CUDA_CHECK(cudaFree(d_output));
+
+    CUDA_CHECK(cudaEventDestroy(kernel_start));
+    CUDA_CHECK(cudaEventDestroy(kernel_stop));
+    CUDA_CHECK(cudaEventDestroy(download_start));
+    CUDA_CHECK(cudaEventDestroy(download_stop));
+
+    std::cout << "Contraction GPU timings (ms) upload=" << upload_ms
+              << " kernel=" << kernel_ms
+              << " download=" << download_ms << "\n";
 
     return host_output;
 }
 
 #define INSTANTIATE_TMM(TTYPE, STYPE) \
-    template TTYPE* tmm_3d_cuda<TTYPE, STYPE>(const Blco_Tensor<TTYPE, STYPE>&, int, int); \
-    template TTYPE* tucker_compute_core_3d_cuda<TTYPE, STYPE>(const Blco_Tensor<TTYPE, STYPE>&, int);
+    template TTYPE* tmm_3d_cuda<TTYPE, STYPE>(const Blco_Tensor<TTYPE, STYPE>&, int, int, bool); \
+    template TTYPE* tucker_compute_core_3d_cuda<TTYPE, STYPE>(const Blco_Tensor<TTYPE, STYPE>&, int); \
+    template TTYPE* contract_n_minus_one_modes_3d_cuda<TTYPE, STYPE>(const Blco_Tensor<TTYPE, STYPE>&, int, int);
 
 INSTANTIATE_TMM(int, uint64_t)
 INSTANTIATE_TMM(float, uint64_t)
