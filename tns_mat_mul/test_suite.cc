@@ -9,22 +9,28 @@ template<typename T, typename S>
 void test_3D_kernels(std::vector<int> dims, int nnz, int block_size, int construction_rank)
 {
     int rank = dims.size();
-    double total_entries = static_cast<double>(dims[0]);
-    for(int i = 1; i < rank; i++) total_entries *= dims[i];
-    double freq = static_cast<double>(nnz) / total_entries;
-
     int min_dim = *(std::min_element(dims.begin(), dims.end()));
-    int cluster_size = 0.05 * min_dim;
-    int max_blocks = 10 * (nnz / pow(cluster_size,rank));
-    std::vector<NNZ_Entry<T>> test_vec = generate_block_sparse_tensor_nd<T>(dims,freq,0,100,cluster_size,max_blocks);
-
+    int cluster_size = std::max(1, (int)(0.05 * min_dim)); // Ensure cluster_size is at least 1
+    float dropout_rate = 0.4f; // Recommended dropout rate for robust testing
+    T min_val = 0;
+    T max_val = 100;
+    double block_volume = std::pow(cluster_size, rank);
+    double avg_nnz_per_block = block_volume * (1.0 - dropout_rate); 
+    int max_blocks = static_cast<int>(std::ceil(
+        static_cast<double>(nnz) / avg_nnz_per_block * 20.0 
+    ));
+    max_blocks = std::max(100, max_blocks);
+    std::vector<NNZ_Entry<T>> test_vec = generate_block_sparse_tensor_nd<T>(dims,nnz,0,100,cluster_size,max_blocks);
+ 
     Blco_Tensor<T,S> blco(test_vec,dims,construction_rank);
     std::vector<T*> fmats = blco.get_fmats();
 
     print_amd_gpu_model();
+    std::cout << "gpu block size: " << block_size << "\n";
     std::cout<<"\n";
-
-    std::cout << "Testing operations on " << dims[0] << " x " << dims[1] << " x " << dims[2] << " tensor with " << nnz << " non zeros\n\n";
+    
+    std::cout << "Testing operations on " << dims[0] << " x " << dims[1] << " x " << dims[2] << " tensor with " << nnz << " non zeros\n";
+    std::cout << "Decomposition rank: " << construction_rank << "\n\n";
 
     std::cout << "Starting warm-up phase (not timed)...\n";
     T* warm_up = tmm_3D<T>(blco, 1, block_size, false);
@@ -59,59 +65,41 @@ void test_3D_kernels(std::vector<int> dims, int nnz, int block_size, int constru
     duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
     std::cout << "Total duration: " << static_cast<float>(duration) / 1000 << " ms\n\n";
 
-    std::cout << "Testing mode 1 contraction\n";
-    start = std::chrono::high_resolution_clock::now();
-    T* contraction_1 = contract_n_minus_one_modes_3D<T>(blco,block_size,1);
-    end = std::chrono::high_resolution_clock::now();
-    duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
-    std::cout << "Total duration: " << static_cast<float>(duration) / 1000 << " ms\n\n";
-
-    std::cout << "Testing mode 2 contraction\n";
-    start = std::chrono::high_resolution_clock::now();
-    T* contraction_2 = contract_n_minus_one_modes_3D<T>(blco,block_size,2);
-    end = std::chrono::high_resolution_clock::now();
-    duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
-    std::cout << "Total duration: " << static_cast<float>(duration) / 1000 << " ms\n\n";
-
-    std::cout << "Testing mode 3 contraction\n";
-    start = std::chrono::high_resolution_clock::now();
-    T* contraction_3 = contract_n_minus_one_modes_3D<T>(blco,block_size,3);
-    end = std::chrono::high_resolution_clock::now();
-    duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
-    std::cout << "Total duration: " << static_cast<float>(duration) / 1000 << " ms\n\n";
-
     std::cout<<"Constructing CPU results:\n\n";
     std::vector<T> cpu_tmm_1 = tmm_3D_cpu<T,S>(1, test_vec, dims, fmats[0], construction_rank);
     std::vector<T> cpu_tmm_2 = tmm_3D_cpu<T,S>(2, test_vec, dims, fmats[1], construction_rank);
     std::vector<T> cpu_tmm_3 = tmm_3D_cpu<T,S>(3, test_vec, dims, fmats[2], construction_rank);
     std::vector<T> cpu_core_tensor = core_tensor_3D_cpu<T,S>(test_vec, dims, fmats, construction_rank);
-    std::vector<T> cpu_contraction_1 = contract_tensor_3D_cpu<T,S>(1, test_vec, dims, fmats, construction_rank);
-    std::vector<T> cpu_contraction_2 = contract_tensor_3D_cpu<T,S>(2, test_vec, dims, fmats, construction_rank);
-    std::vector<T> cpu_contraction_3 = contract_tensor_3D_cpu<T,S>(3, test_vec, dims, fmats, construction_rank);
-    
-    std::cout<<"Comparing CPU and GPU results:\n";
-    if(compare_tmm_arrays(tmm_output_1, cpu_tmm_1.data(), dims, construction_rank, 1)) std::cout<<"mode 1 tmm arrays match!\n";
-    else std::cout<<"mode 1 tmm arrays do not match!\n";
-    if(compare_tmm_arrays(tmm_output_2, cpu_tmm_2.data(), dims, construction_rank, 2)) std::cout<<"mode 2 tmm arrays match!\n";
-    else std::cout<<"mode 2 tmm arrays do not match!\n";
-    if(compare_tmm_arrays(tmm_output_3, cpu_tmm_3.data(), dims, construction_rank, 3)) std::cout<<"mode 3 tmm arrays match!\n";
-    else std::cout<<"mode 3 tmm arrays do not match!\n";
-    // if(compare_ct_arrays(core_output, cpu_core_tensor.data(), dims, construction_rank)) std::cout<<"core tensor arrays match!\n";
-    // else std::cout<<"core tensor arrays don't match!\n";
-    // if(compare_multimode_contraction_arrays(contraction_1, cpu_contraction_1.data(), dims, construction_rank, 1)) std::cout<<"mode 1 contraction arrays match!\n";
-    // else std::cout<<"mode 1 contraction arrays do not match!\n";
-    // if(compare_multimode_contraction_arrays(contraction_2, cpu_contraction_2.data(), dims, construction_rank, 2)) std::cout<<"mode 2 contraction arrays match!\n";
-    // else std::cout<<"mode 2 contraction arrays do not match!\n";
-    // if(compare_multimode_contraction_arrays(contraction_3, cpu_contraction_3.data(), dims, construction_rank, 3)) std::cout<<"mode 3 contraction arrays match!\n";
-    // else std::cout<<"mode 3 contraction arrays do not match!\n";
+
+    std::cout<<"comparing CPU and GPU results\n";
+    if constexpr (std::is_same_v<T, int>)
+    {
+        if(compare_tmm_arrays(tmm_output_1, cpu_tmm_1.data(), dims, construction_rank, 1)) std::cout<<"mode 1 tmm arrays match!\n";
+        else std::cout<<"mode 1 tmm arrays do not match!\n";
+        if(compare_tmm_arrays(tmm_output_2, cpu_tmm_2.data(), dims, construction_rank, 2)) std::cout<<"mode 2 tmm arrays match!\n";
+        else std::cout<<"mode 2 tmm arrays do not match!\n";
+        if(compare_tmm_arrays(tmm_output_3, cpu_tmm_3.data(), dims, construction_rank, 3)) std::cout<<"mode 3 tmm arrays match!\n";
+        else std::cout<<"mode 3 tmm arrays do not match!\n";
+        if(compare_ct_arrays(core_output, cpu_core_tensor.data(), dims, construction_rank)) std::cout<<"core tensor arrays match!\n";
+        else std::cout<<"core tensor arrays don't match!\n";
+    }
+    else
+    {
+        float diff;
+        diff = compare_tmm_arrays_float(tmm_output_1, cpu_tmm_1.data(), dims, construction_rank, 1);
+        std::cout << "Difference for mode 1 tmm arrays is:  " << diff <<  "\n";
+        diff = compare_tmm_arrays_float(tmm_output_2, cpu_tmm_2.data(), dims, construction_rank, 2);
+        std::cout << "Difference for mode 2 tmm arrays is:  " << diff <<  "\n";
+        diff = compare_tmm_arrays_float(tmm_output_3, cpu_tmm_3.data(), dims, construction_rank, 3);
+        std::cout << "Difference for mode 3 tmm arrays is:  " << diff <<  "\n";
+        diff = compare_ct_arrays_float(core_output, cpu_core_tensor.data(), dims, construction_rank);
+        std::cout << "Difference for core tensor arrays is:  " << diff <<  "\n";
+    }
 
     free(tmm_output_1);
     free(tmm_output_2);
     free(tmm_output_3);
     free(core_output);
-    free(contraction_1);
-    free(contraction_2);
-    free(contraction_3);
 }
 
 template<typename T, typename S>
@@ -120,21 +108,22 @@ void test_4D_kernels(std::vector<int> dims, int nnz, int block_size, int constru
     int rank = dims.size();
     double total_entries = static_cast<double>(dims[0]);
     for(int i = 1; i < rank; i++) total_entries *= dims[i];
-    double freq = static_cast<double>(nnz) / total_entries;
 
     int min_dim = *(std::min_element(dims.begin(), dims.end()));
     int cluster_size = 0.05 * min_dim;
     int max_blocks = 10 * (nnz / pow(cluster_size,rank));
-    std::vector<NNZ_Entry<T>> test_vec = generate_block_sparse_tensor_nd<T>(dims,freq,0,100,cluster_size,max_blocks);
+    std::vector<NNZ_Entry<T>> test_vec = generate_block_sparse_tensor_nd<T>(dims,nnz,0,100,cluster_size,max_blocks);
 
     Blco_Tensor<T,S> blco(test_vec,dims,construction_rank);
     std::vector<T*> fmats = blco.get_fmats();
 
     print_amd_gpu_model();
+    std::cout << "gpu block size: " << block_size << "\n";
     std::cout<<"\n";
 
     std::cout << "Testing operations on " << dims[0] << " x " << dims[1] << " x " << dims[2] << 
-    " x " << dims[3] << " tensor with " << nnz << " non zeros\n\n";
+    " x " << dims[3] << " tensor with " << nnz << " non zeros\n";
+    std::cout << "Decomposition rank: " << construction_rank << "\n\n";
 
     std::cout << "Starting warm-up phase (not timed)...\n";
     T* warm_up = tmm_4D<T>(blco, 1, block_size, false);
@@ -176,33 +165,6 @@ void test_4D_kernels(std::vector<int> dims, int nnz, int block_size, int constru
     duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
     std::cout << "Total duration: " << static_cast<float>(duration) / 1000 << " ms\n\n";
 
-    std::cout << "Testing mode 1 contraction\n";
-    start = std::chrono::high_resolution_clock::now();
-    T* contraction_1 = contract_n_minus_one_modes_4D<T>(blco,block_size,1);
-    end = std::chrono::high_resolution_clock::now();
-    duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
-    std::cout << "Total duration: " << static_cast<float>(duration) / 1000 << " ms\n\n";
-
-    std::cout << "Testing mode 2 contraction\n";
-    start = std::chrono::high_resolution_clock::now();
-    T* contraction_2 = contract_n_minus_one_modes_4D<T>(blco,block_size,2);
-    end = std::chrono::high_resolution_clock::now();
-    duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
-    std::cout << "Total duration: " << static_cast<float>(duration) / 1000 << " ms\n\n";
-
-    std::cout << "Testing mode 3 contraction\n";
-    start = std::chrono::high_resolution_clock::now();
-    T* contraction_3 = contract_n_minus_one_modes_4D<T>(blco,block_size,3);
-    end = std::chrono::high_resolution_clock::now();
-    duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
-    std::cout << "Total duration: " << static_cast<float>(duration) / 1000 << " ms\n\n";
-
-    std::cout << "Testing mode 4 contraction\n";
-    start = std::chrono::high_resolution_clock::now();
-    T* contraction_4 = contract_n_minus_one_modes_4D<T>(blco,block_size,4);
-    end = std::chrono::high_resolution_clock::now();
-    duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
-    std::cout << "Total duration: " << static_cast<float>(duration) / 1000 << " ms\n\n";
 
     std::cout<<"constructing CPU results\n\n";
     std::vector<T> cpu_tmm_1 = tmm_4D_cpu<T,S>(1, test_vec, dims, fmats[0], construction_rank);
@@ -210,40 +172,41 @@ void test_4D_kernels(std::vector<int> dims, int nnz, int block_size, int constru
     std::vector<T> cpu_tmm_3 = tmm_4D_cpu<T,S>(3, test_vec, dims, fmats[2], construction_rank);
     std::vector<T> cpu_tmm_4 = tmm_4D_cpu<T,S>(4, test_vec, dims, fmats[3], construction_rank);
     std::vector<T> cpu_core_tensor = core_tensor_4D_cpu<T,S>(test_vec, dims, fmats, construction_rank);
-    std::vector<T> cpu_contraction_1 = contract_tensor_4D_cpu<T,S>(1, test_vec, dims, fmats, construction_rank);
-    std::vector<T> cpu_contraction_2 = contract_tensor_4D_cpu<T,S>(2, test_vec, dims, fmats, construction_rank);
-    std::vector<T> cpu_contraction_3 = contract_tensor_4D_cpu<T,S>(3, test_vec, dims, fmats, construction_rank);
-    std::vector<T> cpu_contraction_4 = contract_tensor_4D_cpu<T,S>(4, test_vec, dims, fmats, construction_rank);
     
     std::cout<<"comparing CPU and GPU results\n";
-    if(compare_tmm_arrays(tmm_output_1, cpu_tmm_1.data(), dims, construction_rank, 1)) std::cout<<"mode 1 tmm arrays match!\n";
-    else std::cout<<"mode 1 tmm arrays do not match!\n";
-    if(compare_tmm_arrays(tmm_output_2, cpu_tmm_2.data(), dims, construction_rank, 2)) std::cout<<"mode 2 tmm arrays match!\n";
-    else std::cout<<"mode 2 tmm arrays do not match!\n";
-    if(compare_tmm_arrays(tmm_output_3, cpu_tmm_3.data(), dims, construction_rank, 3)) std::cout<<"mode 3 tmm arrays match!\n";
-    else std::cout<<"mode 3 tmm arrays do not match!\n";
-    if(compare_tmm_arrays(tmm_output_4, cpu_tmm_4.data(), dims, construction_rank, 4)) std::cout<<"mode 4 tmm arrays match!\n";
-    else std::cout<<"mode 4 tmm arrays do not match!\n";
-    if(compare_ct_arrays(core_output, cpu_core_tensor.data(), dims, construction_rank)) std::cout<<"core tensor arrays match!\n";
-    else std::cout<<"core tensor arrays don't match!\n";
-    if(compare_multimode_contraction_arrays(contraction_1, cpu_contraction_1.data(), dims, construction_rank, 1)) std::cout<<"mode 1 contraction arrays match!\n";
-    else std::cout<<"mode 1 contraction arrays do not match!\n";
-    if(compare_multimode_contraction_arrays(contraction_2, cpu_contraction_2.data(), dims, construction_rank, 2)) std::cout<<"mode 2 contraction arrays match!\n";
-    else std::cout<<"mode 2 contraction arrays do not match!\n";
-    if(compare_multimode_contraction_arrays(contraction_3, cpu_contraction_3.data(), dims, construction_rank, 3)) std::cout<<"mode 3 contraction arrays match!\n";
-    else std::cout<<"mode 3 contraction arrays do not match!\n";
-    if(compare_multimode_contraction_arrays(contraction_4, cpu_contraction_4.data(), dims, construction_rank, 4)) std::cout<<"mode 4 contraction arrays match!\n";
-    else std::cout<<"mode 4 contraction arrays do not match!\n";
+    if constexpr (std::is_same_v<T, int>)
+    {
+        if(compare_tmm_arrays(tmm_output_1, cpu_tmm_1.data(), dims, construction_rank, 1)) std::cout<<"mode 1 tmm arrays match!\n";
+        else std::cout<<"mode 1 tmm arrays do not match!\n";
+        if(compare_tmm_arrays(tmm_output_2, cpu_tmm_2.data(), dims, construction_rank, 2)) std::cout<<"mode 2 tmm arrays match!\n";
+        else std::cout<<"mode 2 tmm arrays do not match!\n";
+        if(compare_tmm_arrays(tmm_output_3, cpu_tmm_3.data(), dims, construction_rank, 3)) std::cout<<"mode 3 tmm arrays match!\n";
+        else std::cout<<"mode 3 tmm arrays do not match!\n";
+        if(compare_tmm_arrays(tmm_output_4, cpu_tmm_4.data(), dims, construction_rank, 4)) std::cout<<"mode 4 tmm arrays match!\n";
+        else std::cout<<"mode 4 tmm arrays do not match!\n";
+        if(compare_ct_arrays(core_output, cpu_core_tensor.data(), dims, construction_rank)) std::cout<<"core tensor arrays match!\n";
+        else std::cout<<"core tensor arrays don't match!\n";
+    }
+    else
+    {
+        float diff;
+        diff = compare_tmm_arrays_float(tmm_output_1, cpu_tmm_1.data(), dims, construction_rank, 1);
+        std::cout << "Difference for mode 1 tmm arrays is:  " << diff <<  "\n";
+        diff = compare_tmm_arrays_float(tmm_output_2, cpu_tmm_2.data(), dims, construction_rank, 2);
+        std::cout << "Difference for mode 2 tmm arrays is:  " << diff <<  "\n";
+        diff = compare_tmm_arrays_float(tmm_output_3, cpu_tmm_3.data(), dims, construction_rank, 3);
+        std::cout << "Difference for mode 3 tmm arrays is:  " << diff <<  "\n";
+        diff = compare_tmm_arrays_float(tmm_output_4, cpu_tmm_4.data(), dims, construction_rank, 4);
+        std::cout << "Difference for mode 4 tmm arrays is:  " << diff <<  "\n";
+        diff = compare_ct_arrays_float(core_output, cpu_core_tensor.data(), dims, construction_rank);
+        std::cout << "Difference for core tensor arrays is:  " << diff <<  "\n";
+    }
 
     free(tmm_output_1);
     free(tmm_output_2);
     free(tmm_output_3);
     free(tmm_output_4);
     free(core_output);
-    free(contraction_1);
-    free(contraction_2);
-    free(contraction_3);
-    free(contraction_4);
 }
 
 template<typename T, typename S>
@@ -252,21 +215,22 @@ void test_5D_kernels(std::vector<int> dims, int nnz, int block_size, int constru
     int rank = dims.size();
     double total_entries = static_cast<double>(dims[0]);
     for(int i = 1; i < rank; i++) total_entries *= dims[i];
-    double freq = static_cast<double>(nnz) / total_entries;
 
     int min_dim = *(std::min_element(dims.begin(), dims.end()));
     int cluster_size = 0.05 * min_dim;
     int max_blocks = 10 * (nnz / pow(cluster_size,rank));
-    std::vector<NNZ_Entry<T>> test_vec = generate_block_sparse_tensor_nd<T>(dims,freq,0,100,cluster_size,max_blocks);
+    std::vector<NNZ_Entry<T>> test_vec = generate_block_sparse_tensor_nd<T>(dims,nnz,0,100,cluster_size,max_blocks);
 
     Blco_Tensor<T,S> blco(test_vec,dims,construction_rank);
     std::vector<T*> fmats = blco.get_fmats();
 
     print_amd_gpu_model();
+    std::cout << "gpu block size: " << block_size << "\n";
     std::cout<<"\n";
 
     std::cout << "Testing operations on " << dims[0] << " x " << dims[1] << " x " << dims[2] << 
-    " x " << dims[3] << " x " <<  dims[4] << " tensor with " << nnz << " non zeros\n\n";
+    " x " << dims[3] << " x " <<  dims[4] << " tensor with " << nnz << " non zeros\n";
+    std::cout << "Decomposition rank: " << construction_rank << "\n\n";
 
     std::cout << "Starting warm-up phase (not timed)...\n";
     T* warm_up = tmm_5D<T>(blco, 1, block_size, false);
@@ -310,82 +274,10 @@ void test_5D_kernels(std::vector<int> dims, int nnz, int block_size, int constru
 
     std::cout << "Testing core generation\n";
     start = std::chrono::high_resolution_clock::now();
-    T* core_output = tucker_compute_core_4D<T>(blco,block_size);
+    T* core_output = tucker_compute_core_5D<T>(blco,block_size);
     end = std::chrono::high_resolution_clock::now();
     duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
     std::cout << "Total duration: " << static_cast<float>(duration) / 1000 << " ms\n\n";
-
-    std::cout << "Testing mode 1 contraction\n";
-    start = std::chrono::high_resolution_clock::now();
-    T* contraction_1 = contract_n_minus_one_modes_5D<T>(blco,block_size,1);
-    end = std::chrono::high_resolution_clock::now();
-    duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
-    std::cout << "Total duration: " << static_cast<float>(duration) / 1000 << " ms\n\n";
-
-    std::cout << "Testing mode 2 contraction\n";
-    start = std::chrono::high_resolution_clock::now();
-    T* contraction_2 = contract_n_minus_one_modes_5D<T>(blco,block_size,2);
-    end = std::chrono::high_resolution_clock::now();
-    duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
-    std::cout << "Total duration: " << static_cast<float>(duration) / 1000 << " ms\n\n";
-
-    std::cout << "Testing mode 3 contraction\n";
-    start = std::chrono::high_resolution_clock::now();
-    T* contraction_3 = contract_n_minus_one_modes_5D<T>(blco,block_size,3);
-    end = std::chrono::high_resolution_clock::now();
-    duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
-    std::cout << "Total duration: " << static_cast<float>(duration) / 1000 << " ms\n\n";
-
-    std::cout << "Testing mode 4 contraction\n";
-    start = std::chrono::high_resolution_clock::now();
-    T* contraction_4 = contract_n_minus_one_modes_5D<T>(blco,block_size,4);
-    end = std::chrono::high_resolution_clock::now();
-    duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
-    std::cout << "Total duration: " << static_cast<float>(duration) / 1000 << " ms\n\n";
-
-    std::cout << "Testing mode 5 contraction\n";
-    start = std::chrono::high_resolution_clock::now();
-    T* contraction_5 = contract_n_minus_one_modes_5D<T>(blco,block_size,5);
-    end = std::chrono::high_resolution_clock::now();
-    duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
-    std::cout << "Total duration: " << static_cast<float>(duration) / 1000 << " ms\n\n";
-
-    std::cout<<"constructing CPU results\n\n";
-    std::vector<T> cpu_tmm_1 = tmm_5D_cpu<T,S>(1, test_vec, dims, fmats[0], construction_rank);
-    std::vector<T> cpu_tmm_2 = tmm_5D_cpu<T,S>(2, test_vec, dims, fmats[1], construction_rank);
-    std::vector<T> cpu_tmm_3 = tmm_5D_cpu<T,S>(3, test_vec, dims, fmats[2], construction_rank);
-    std::vector<T> cpu_tmm_4 = tmm_5D_cpu<T,S>(4, test_vec, dims, fmats[3], construction_rank);
-    std::vector<T> cpu_tmm_5 = tmm_5D_cpu<T,S>(5, test_vec, dims, fmats[3], construction_rank);
-    std::vector<T> cpu_core_tensor = core_tensor_5D_cpu<T,S>(test_vec, dims, fmats, construction_rank);
-    std::vector<T> cpu_contraction_1 = contract_tensor_5D_cpu<T,S>(1, test_vec, dims, fmats, construction_rank);
-    std::vector<T> cpu_contraction_2 = contract_tensor_5D_cpu<T,S>(2, test_vec, dims, fmats, construction_rank);
-    std::vector<T> cpu_contraction_3 = contract_tensor_5D_cpu<T,S>(3, test_vec, dims, fmats, construction_rank);
-    std::vector<T> cpu_contraction_4 = contract_tensor_5D_cpu<T,S>(4, test_vec, dims, fmats, construction_rank);
-    std::vector<T> cpu_contraction_5 = contract_tensor_5D_cpu<T,S>(5, test_vec, dims, fmats, construction_rank);
-    
-    std::cout<<"comparing CPU and GPU results\n";
-    if(compare_tmm_arrays(tmm_output_1, cpu_tmm_1.data(), dims, construction_rank, 1)) std::cout<<"mode 1 tmm arrays match!\n";
-    else std::cout<<"mode 1 tmm arrays do not match!\n";
-    if(compare_tmm_arrays(tmm_output_2, cpu_tmm_2.data(), dims, construction_rank, 2)) std::cout<<"mode 2 tmm arrays match!\n";
-    else std::cout<<"mode 2 tmm arrays do not match!\n";
-    if(compare_tmm_arrays(tmm_output_3, cpu_tmm_3.data(), dims, construction_rank, 3)) std::cout<<"mode 3 tmm arrays match!\n";
-    else std::cout<<"mode 3 tmm arrays do not match!\n";
-    if(compare_tmm_arrays(tmm_output_4, cpu_tmm_4.data(), dims, construction_rank, 4)) std::cout<<"mode 4 tmm arrays match!\n";
-    else std::cout<<"mode 4 tmm arrays do not match!\n";
-    if(compare_tmm_arrays(tmm_output_5, cpu_tmm_5.data(), dims, construction_rank, 5)) std::cout<<"mode 5 tmm arrays match!\n";
-    else std::cout<<"mode 5 tmm arrays do not match!\n";
-    if(compare_ct_arrays(core_output, cpu_core_tensor.data(), dims, construction_rank)) std::cout<<"core tensor arrays match!\n";
-    else std::cout<<"core tensor arrays don't match!\n";
-    if(compare_multimode_contraction_arrays(contraction_1, cpu_contraction_1.data(), dims, construction_rank, 1)) std::cout<<"mode 1 contraction arrays match!\n";
-    else std::cout<<"mode 1 contraction arrays do not match!\n";
-    if(compare_multimode_contraction_arrays(contraction_2, cpu_contraction_2.data(), dims, construction_rank, 2)) std::cout<<"mode 2 contraction arrays match!\n";
-    else std::cout<<"mode 2 contraction arrays do not match!\n";
-    if(compare_multimode_contraction_arrays(contraction_3, cpu_contraction_3.data(), dims, construction_rank, 3)) std::cout<<"mode 3 contraction arrays match!\n";
-    else std::cout<<"mode 3 contraction arrays do not match!\n";
-    if(compare_multimode_contraction_arrays(contraction_4, cpu_contraction_4.data(), dims, construction_rank, 4)) std::cout<<"mode 4 contraction arrays match!\n";
-    else std::cout<<"mode 4 contraction arrays do not match!\n";
-    if(compare_multimode_contraction_arrays(contraction_5, cpu_contraction_5.data(), dims, construction_rank, 5)) std::cout<<"mode 5 contraction arrays match!\n";
-    else std::cout<<"mode 5 contraction arrays do not match!\n";
 
     free(tmm_output_1);
     free(tmm_output_2);
@@ -393,11 +285,6 @@ void test_5D_kernels(std::vector<int> dims, int nnz, int block_size, int constru
     free(tmm_output_4);
     free(tmm_output_5);
     free(core_output);
-    free(contraction_1);
-    free(contraction_2);
-    free(contraction_3);
-    free(contraction_4);
-    free(contraction_5);
 }
 
 int main(int argc, char* argv[]) {

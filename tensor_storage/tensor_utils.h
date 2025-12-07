@@ -68,7 +68,7 @@ int ceiling_log2(S x) {
 // Generate a random sparse tensor with approximate block structure.
 // Parameters:
 //   - rows, cols, depth: tensor dimensions
-//   - density: fraction of nonzeros (between 0 and 1)
+//   - target nnz: Number of non zeros
 //   - min_val, max_val: value range for nonzeros
 //   - block_size: size of each "dense block"
 //   - max_blocks: stop condition for block attempts
@@ -77,7 +77,7 @@ int ceiling_log2(S x) {
 template<typename T>
 std::vector<NNZ_Entry<T>> generate_block_sparse_tensor_nd(
     const std::vector<int>& dims,   // tensor dimensions [D0, D1, D2, ...]
-    float density,                  // target sparsity density in (0,1]
+    uint64_t target_nnz,            // target number of non-zero entries
     T min_val, T max_val,           // value range
     int block_size,                 // edge size of dense sub-blocks
     int max_blocks,                 // cap for random block sampling
@@ -86,33 +86,33 @@ std::vector<NNZ_Entry<T>> generate_block_sparse_tensor_nd(
     int rank = dims.size();
     if (rank < 2)
         throw std::invalid_argument("Tensor rank must be >= 2.");
-    if (density <= 0.0f || density > 1.0f)
-        throw std::invalid_argument("Density must be in (0,1].");
+    if (target_nnz == 0)
+        return {}; // Return empty if no non-zeros are requested
     if (min_val > max_val)
         throw std::invalid_argument("Invalid value range.");
 
-    // Total entries in tensor
-    uint64_t total_entries = 1;
-    for (int d : dims)
-        total_entries *= static_cast<uint64_t>(d);
-
-    uint64_t target_nnz = static_cast<uint64_t>(total_entries * density);
-
+    // Note: Removed the calculation of total_entries and the density check.
+    
     std::vector<NNZ_Entry<T>> entries;
+    // Reserve space based on the requested target_nnz
     entries.reserve(target_nnz);
 
     std::mt19937 rng(std::random_device{}());
 
     // Distributions
     std::uniform_real_distribution<float> dropout_dist(0.0f, 1.0f);
-    std::uniform_int_distribution<int> block_pos_dist(0, 1000000); // random offset base
-
+    // std::uniform_int_distribution<int> block_pos_dist(0, 1000000); // Not used in the original loop logic
+    
     auto generate_value = [&]() -> T {
         if constexpr (std::is_integral_v<T>) {
-            std::uniform_int_distribution<T> dist(min_val, max_val);
+            // Need to handle the case where T is integral but T is not the same as int
+            // Using a generic way to handle integral/floating point
+            using value_type = T;
+            std::uniform_int_distribution<value_type> dist(min_val, max_val);
             return dist(rng);
         } else if constexpr (std::is_floating_point_v<T>) {
-            std::uniform_real_distribution<T> dist(min_val, max_val);
+            using value_type = T;
+            std::uniform_real_distribution<value_type> dist(min_val, max_val);
             return dist(rng);
         } else {
             throw std::invalid_argument("Unsupported type for value generation.");
@@ -132,7 +132,14 @@ std::vector<NNZ_Entry<T>> generate_block_sparse_tensor_nd(
         // Random block start per dimension
         std::vector<int> block_start(rank);
         for (int r = 0; r < rank; ++r) {
-            int limit = std::max((dims[r] - block_size) / stride, 1);
+            // Calculate the maximum start position index based on stride
+            // Ensure the start position allows for a full block_size extent without exceeding dims[r]
+            int max_start_index = dims[r] - block_size;
+            int limit = std::max(max_start_index / stride, 0);
+
+            // The original logic was potentially flawed in calculating the limit, 
+            // relying on (dims[r] - block_size) / stride. Keeping the spirit but ensuring a valid distribution.
+            // If limit is 0, the only possible start is 0.
             std::uniform_int_distribution<int> start_dist(0, limit);
             block_start[r] = start_dist(rng) * stride;
         }
@@ -147,11 +154,12 @@ std::vector<NNZ_Entry<T>> generate_block_sparse_tensor_nd(
             for (int r = 0; r < rank; ++r)
                 coord[r] = block_start[r] + idx[r];
 
-            // Check bounds
+            // Check bounds (redundant if block_start calculation is perfect, but safer to keep)
             bool in_bounds = true;
             for (int r = 0; r < rank; ++r)
                 if (coord[r] >= dims[r]) { in_bounds = false; break; }
 
+            // If entry is in bounds and passes dropout, add it
             if (in_bounds && dropout_dist(rng) > dropout_rate) {
                 entries.push_back({rank, coord, generate_value()});
                 ++nnz_count;
@@ -161,11 +169,16 @@ std::vector<NNZ_Entry<T>> generate_block_sparse_tensor_nd(
             for (int r = rank - 1; r >= 0; --r) {
                 idx[r]++;
                 if (idx[r] < block_size)
-                    break;
-                idx[r] = 0;
-                if (r == 0) done = true;
+                    break; // Moved to the next entry in the block
+                idx[r] = 0; // Dimension wraps around
+                if (r == 0) done = true; // Block finished
             }
         }
+    }
+    
+    // Crucial step: If we overshot the target_nnz in the last block, truncate the vector.
+    if (entries.size() > target_nnz) {
+        entries.resize(target_nnz);
     }
 
     return entries;

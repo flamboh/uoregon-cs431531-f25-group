@@ -160,7 +160,7 @@ const std::vector<int>& dims, T* fmat, int decomp_rank)
                 case 4: F_row_idx = i4; break; // New case for 4th dimension
                 default: F_row_idx = 0;
             }
-            const size_t F_idx = (size_t)F_row_idx * R + r;
+            const size_t F_idx = (size_t)r * I_mode + F_row_idx; 
             const T f_val = fmat[F_idx];
 
             // --- B. Get B Index (Row-Major B: B_I1 x B_I2 x B_I3 x B_I4) ---
@@ -188,22 +188,20 @@ const std::vector<int>& dims, T* fmat, int decomp_rank)
 
 //5D implementation
 template<typename T, typename S>
-std::vector<T> tmm_5D_cpu(int mode, const std::vector<NNZ_Entry<T>>& sparse_tensor,
-const std::vector<int>& dims, T* fmat, int decomp_rank)
+std::vector<T> tmm_5D_cpu(int mode, const std::vector<NNZ_Entry<T>>& sparse_tensor, 
+                                   const std::vector<int>& dims, T* fmat, int decomp_rank)
 {
-    // --- 1. Validation and Dimension Setup ---
+    // --- 1. Validation and Dimension Setup (No change) ---
     if (dims.size() != 5 || mode < 1 || mode > 5) {
         throw std::invalid_argument("TMM CPU requires exactly 5 dimensions and mode 1, 2, 3, 4, or 5.");
     }
-    const int I1 = dims[0];
+    const int I1 = dims[0]; //... I5 and R remain the same
     const int I2 = dims[1];
     const int I3 = dims[2];
     const int I4 = dims[3];
-    const int I5 = dims[4]; // New 5th dimension
-    const int R = decomp_rank; // New dimension (Rank)
-
-    // Original dimension being contracted
-    const int I_mode = dims[mode - 1];
+    const int I5 = dims[4]; 
+    const int R = decomp_rank; 
+    const int I_mode = dims[mode - 1]; 
 
     // --- 2. Determine Output Tensor Dimensions and Initialize ---
     int B_dims[5];
@@ -211,7 +209,7 @@ const std::vector<int>& dims, T* fmat, int decomp_rank)
     B_dims[1] = (mode == 2) ? R : I2;
     B_dims[2] = (mode == 3) ? R : I3;
     B_dims[3] = (mode == 4) ? R : I4;
-    B_dims[4] = (mode == 5) ? R : I5; // New 5th dimension
+    B_dims[4] = (mode == 5) ? R : I5;
 
     const int B_I1 = B_dims[0];
     const int B_I2 = B_dims[1];
@@ -219,64 +217,84 @@ const std::vector<int>& dims, T* fmat, int decomp_rank)
     const int B_I4 = B_dims[3];
     const int B_I5 = B_dims[4];
 
-    // Total size: B_I1 * B_I2 * B_I3 * B_I4 * B_I5
+    // Pre-calculate products for index calculation efficiency
+    const size_t P1 = (size_t)B_I2 * B_I3 * B_I4 * B_I5;
+    const size_t P2 = (size_t)B_I3 * B_I4 * B_I5;
+    const size_t P3 = (size_t)B_I4 * B_I5;
+    const size_t P4 = (size_t)B_I5;
+
+    // Total size of the output tensor B
     const size_t output_size = (size_t)B_I1 * B_I2 * B_I3 * B_I4 * B_I5;
-    std::vector<T> output_tensor(output_size, T{0});
+    std::vector<T> output_tensor(output_size, T{0}); // Final result
 
-    // --- 3. Perform TMM using Sparse Iteration ---
-    // The core loop iterates over the non-zero entries of A.
-    for (const auto& entry : sparse_tensor) {
-        if (entry.indices.size() != 5) continue;
+    // --- 3. Parallel TMM using OpenMP ---
+    
+    #pragma omp parallel
+    {
+        // 🔑 Private accumulation tensor for each thread, initialized to zero
+        std::vector<T> B_local(output_size, T{0}); 
 
-        const int i1 = entry.indices[0];
-        const int i2 = entry.indices[1];
-        const int i3 = entry.indices[2];
-        const int i4 = entry.indices[3];
-        const int i5 = entry.indices[4]; // New 5th index
-        const T a_val = entry.value;
+        // Schedule the outer loop across all threads
+        #pragma omp for nowait
+        for (size_t k = 0; k < sparse_tensor.size(); ++k) {
+            const auto& entry = sparse_tensor[k];
+            if (entry.indices.size() != 5) continue;
 
-        // Ensure indices are within bounds
-        if (i1 < 0 || i1 >= I1 || i2 < 0 || i2 >= I2 || i3 < 0 || i3 >= I3 || i4 < 0 || i4 >= I4 || i5 < 0 || i5 >= I5) {
-            continue;
-        }
+            const int i1 = entry.indices[0]; 
+            const int i2 = entry.indices[1]; 
+            const int i3 = entry.indices[2];
+            const int i4 = entry.indices[3];
+            const int i5 = entry.indices[4];
+            const T a_val = entry.value;
 
-        // --- Core TMM Update ---
-        for (int r = 0; r < R; ++r) {
-
-            // --- A. Get F Index (Row-Major F: I_mode x R) ---
-            int F_row_idx;
-            switch (mode) {
-                case 1: F_row_idx = i1; break;
-                case 2: F_row_idx = i2; break;
-                case 3: F_row_idx = i3; break;
-                case 4: F_row_idx = i4; break;
-                case 5: F_row_idx = i5; break; // Case for 5th dimension
-                default: F_row_idx = 0;
+            // Ensure indices are within bounds (same as original)
+            if (i1 < 0 || i1 >= I1 || i2 < 0 || i2 >= I2 || i3 < 0 || i3 >= I3 || i4 < 0 || i4 >= I4 || i5 < 0 || i5 >= I5) {
+                continue; 
             }
-            const size_t F_idx = (size_t)F_row_idx * R + r;
-            const T f_val = fmat[F_idx];
 
-            // --- B. Get B Index (Row-Major B: B_I1 x B_I2 x B_I3 x B_I4 x B_I5) ---
+            // --- Core TMM Update (Inner Loop) ---
+            for (int r = 0; r < R; ++r) {
+                
+                // --- A. Get F Index ---
+                int F_row_idx; 
+                switch (mode) {
+                    case 1: F_row_idx = i1; break;
+                    case 2: F_row_idx = i2; break;
+                    case 3: F_row_idx = i3; break;
+                    case 4: F_row_idx = i4; break;
+                    case 5: F_row_idx = i5; break;
+                    default: F_row_idx = 0; 
+                }
+                const size_t F_idx = (size_t)r * I_mode + F_row_idx;
+                const T f_val = fmat[F_idx];
+                
+                // --- B. Get B Index ---
+                int B_idx0 = (mode == 1) ? r : i1;
+                int B_idx1 = (mode == 2) ? r : i2;
+                int B_idx2 = (mode == 3) ? r : i3;
+                int B_idx3 = (mode == 4) ? r : i4;
+                int B_idx4 = (mode == 5) ? r : i5;
 
-            // The indices of B are the original indices (i1..i5) with 'mode' replaced by 'r'.
-            int B_idx0 = (mode == 1) ? r : i1;
-            int B_idx1 = (mode == 2) ? r : i2;
-            int B_idx2 = (mode == 3) ? r : i3;
-            int B_idx3 = (mode == 4) ? r : i4;
-            int B_idx4 = (mode == 5) ? r : i5; // 5th output index
+                // Row-Major Index Calculation using pre-calculated products:
+                const size_t B_idx = (size_t)B_idx0 * P1 + 
+                                     B_idx1 * P2 + 
+                                     B_idx2 * P3 + 
+                                     B_idx3 * P4 + 
+                                     B_idx4;
+                
+                // TMM Update into thread-local copy
+                B_local[B_idx] += a_val * f_val;
+            }
+        } // End of OpenMP 'for' loop
 
-            // Row-Major Index Calculation for 5D:
-            // idx = idx0*(D2*D3*D4*D5) + idx1*(D3*D4*D5) + idx2*(D4*D5) + idx3*(D5) + idx4
-            const size_t B_idx = (size_t)B_idx0 * (B_I2 * B_I3 * B_I4 * B_I5) +
-                                 B_idx1 * (B_I3 * B_I4 * B_I5) +
-                                 B_idx2 * (B_I4 * B_I5) +
-                                 B_idx3 * B_I5 +
-                                 B_idx4;
-
-            // TMM Update: B(...) += A(...) * F(...)
-            output_tensor[B_idx] += a_val * f_val;
+        // 🔑 Reduction: Merge B_local results back into the shared output_tensor
+        #pragma omp critical
+        {
+            for (size_t i = 0; i < output_size; ++i) {
+                output_tensor[i] += B_local[i];
+            }
         }
-    }
+    } // End of OpenMP 'parallel' block
 
     return output_tensor;
 }
@@ -328,17 +346,19 @@ const std::vector<T*>& fmats, int decomp_rank)
                     // --- A. Get Factor Matrix Terms ---
                     // Fk is Ik x R, Row-Major. Fk^T(rk, ik) is Fk(ik, rk).
                     // Index = ik * R + rk
-
-                    // F1^T(r1, i1) is at F1[i1 * R + r1]
-                    const size_t F1_idx = (size_t)i1 * R + r1;
+                    
+                    // FIX: Column-Major Indexing: r1 * I1 + i1
+                    const size_t F1_idx = (size_t)r1 * I1 + i1; 
                     const T f1_val = fmats[0][F1_idx];
 
-                    // F2^T(r2, i2) is at F2[i2 * R + r2]
-                    const size_t F2_idx = (size_t)i2 * R + r2;
+                    // F2 is I2 x R matrix, stored Column-Major. Access F2(i2, r2)
+                    // FIX: Column-Major Indexing: r2 * I2 + i2
+                    const size_t F2_idx = (size_t)r2 * I2 + i2;
                     const T f2_val = fmats[1][F2_idx];
-
-                    // F3^T(r3, i3) is at F3[i3 * R + r3]
-                    const size_t F3_idx = (size_t)i3 * R + r3;
+                    
+                    // F3 is I3 x R matrix, stored Column-Major. Access F3(i3, r3)
+                    // FIX: Column-Major Indexing: r3 * I3 + i3
+                    const size_t F3_idx = (size_t)r3 * I3 + i3;
                     const T f3_val = fmats[2][F3_idx];
 
                     // --- B. Get G Index (Row-Major G: R x R x R) ---
@@ -396,11 +416,10 @@ std::vector<T> core_tensor_4D_cpu(const std::vector<NNZ_Entry<T>>& sparse_tensor
                 for (int r3 = 0; r3 < R; ++r3) {
                     for (int r4 = 0; r4 < R; ++r4) {
 
-                        // --- A. Get Factor Matrix Terms (Fk is Ik x R, Row-Major) ---
-                        const T f1_val = fmats[0][(size_t)i1 * R + r1];
-                        const T f2_val = fmats[1][(size_t)i2 * R + r2];
-                        const T f3_val = fmats[2][(size_t)i3 * R + r3];
-                        const T f4_val = fmats[3][(size_t)i4 * R + r4];
+                        const T f1_val = fmats[0][(size_t)r1 * I1 + i1];
+                        const T f2_val = fmats[1][(size_t)r2 * I2 + i2];
+                        const T f3_val = fmats[2][(size_t)r3 * I3 + i3];
+                        const T f4_val = fmats[3][(size_t)r4 * I4+ i4];
 
                         // --- B. Get G Index (Row-Major G: R x R x R x R) ---
                         // Index = r1 * R^3 + r2 * R^2 + r3 * R + r4
@@ -418,369 +437,103 @@ std::vector<T> core_tensor_4D_cpu(const std::vector<NNZ_Entry<T>>& sparse_tensor
 }
 
 template<typename T, typename S>
-std::vector<T> core_tensor_5D_cpu(const std::vector<NNZ_Entry<T>>& sparse_tensor, const std::vector<int>& dims,
-                                 const std::vector<T*>& fmats, int decomp_rank)
+std::vector<T> core_tensor_5D_cpu(const std::vector<NNZ_Entry<T>>& sparse_tensor, 
+                                          const std::vector<int>& dims, 
+                                          const std::vector<T*>& fmats, int decomp_rank)
 {
-    // --- 1. Validation and Dimension Setup ---
+    // --- 1. Validation and Dimension Setup (No change) ---
     if (dims.size() != 5 || fmats.size() != 5) {
         throw std::invalid_argument("Core Tensor 5D CPU requires 5 dimensions and 5 factor matrices.");
     }
-    const int I1 = dims[0];
+    const int I1 = dims[0]; //... I5 and R remain the same
     const int I2 = dims[1];
     const int I3 = dims[2];
     const int I4 = dims[3];
     const int I5 = dims[4];
     const int R = decomp_rank;
 
-    // --- 2. Determine Output Tensor Size and Initialize ---
+    // --- 2. Determine Output Tensor Size and Initialize (No change) ---
     const size_t R_sq = (size_t)R * R;
     const size_t R_cub = R_sq * R;
     const size_t R_4 = R_cub * R;
     const size_t output_size = R_4 * R; // R^5
+    
+    // The final result vector
+    std::vector<T> core_tensor_G(output_size, T{0}); 
 
-    std::vector<T> core_tensor_G(output_size, T{0});
+    // --- 3. Parallel Contractions using OpenMP Reduction ---
+    
+    // Create a thread-local accumulation structure for reduction.
+    // Each thread will accumulate results into its own temporary copy (G_local).
+    // The reduction clause 'reduction(+:core_tensor_G)' is not available 
+    // for std::vector<T>, so we must manually manage it using a thread-local array
+    // and a critical section or atomic update (or a better library approach like TBB).
+    
+    // For simplicity and correctness with standard OpenMP:
+    // We can use a per-thread private copy of the entire output tensor G_local.
+    
+    #pragma omp parallel
+    {
+        // 🔑 Private accumulation tensor for each thread, initialized to zero
+        std::vector<T> G_local(output_size, T{0}); 
 
-    // --- 3. Perform Simultaneous Contractions ---
-    for (const auto& entry : sparse_tensor) {
-        if (entry.indices.size() != 5) continue;
+        // Schedule the outer loop across all threads
+        #pragma omp for nowait
+        for (size_t k = 0; k < sparse_tensor.size(); ++k) {
+            const auto& entry = sparse_tensor[k];
+            if (entry.indices.size() != 5) continue;
 
-        const int i1 = entry.indices[0];
-        const int i2 = entry.indices[1];
-        const int i3 = entry.indices[2];
-        const int i4 = entry.indices[3];
-        const int i5 = entry.indices[4];
-        const T a_val = entry.value;
+            const int i1 = entry.indices[0]; 
+            const int i2 = entry.indices[1]; 
+            const int i3 = entry.indices[2];
+            const int i4 = entry.indices[3]; 
+            const int i5 = entry.indices[4];
+            const T a_val = entry.value;
 
-        // Ensure indices are within bounds
-        if (i1 < 0 || i1 >= I1 || i2 < 0 || i2 >= I2 || i3 < 0 || i3 >= I3 || i4 < 0 || i4 >= I4 || i5 < 0 || i5 >= I5) {
-            continue;
-        }
+            // Ensure indices are within bounds (No change)
+            if (i1 < 0 || i1 >= I1 || i2 < 0 || i2 >= I2 || i3 < 0 || i3 >= I3 || i4 < 0 || i4 >= I4 || i5 < 0 || i5 >= I5) {
+                continue; 
+            }
 
-        // --- Core Accumulation Loop ---
-        for (int r1 = 0; r1 < R; ++r1) {
-            for (int r2 = 0; r2 < R; ++r2) {
-                for (int r3 = 0; r3 < R; ++r3) {
-                    for (int r4 = 0; r4 < R; ++r4) {
-                        for (int r5 = 0; r5 < R; ++r5) {
+            // --- Core Accumulation Loop (Writes to G_local) ---
+            for (int r1 = 0; r1 < R; ++r1) {
+                for (int r2 = 0; r2 < R; ++r2) {
+                    for (int r3 = 0; r3 < R; ++r3) {
+                        for (int r4 = 0; r4 < R; ++r4) {
+                            for (int r5 = 0; r5 < R; ++r5) {
 
-                            // --- A. Get Factor Matrix Terms (Fk is Ik x R, Row-Major) ---
-                            const T f1_val = fmats[0][(size_t)i1 * R + r1];
-                            const T f2_val = fmats[1][(size_t)i2 * R + r2];
-                            const T f3_val = fmats[2][(size_t)i3 * R + r3];
-                            const T f4_val = fmats[3][(size_t)i4 * R + r4];
-                            const T f5_val = fmats[4][(size_t)i5 * R + r5];
+                                // --- A. Get Factor Matrix Terms ---
+                                const T f1_val = fmats[0][(size_t)r1 * I1 + i1];
+                                const T f2_val = fmats[1][(size_t)r2 * I2 + i2];
+                                const T f3_val = fmats[2][(size_t)r3 * I3 + i3];
+                                const T f4_val = fmats[3][(size_t)r4 * I4+ i4];
+                                const T f5_val = fmats[4][(size_t)r5 * I5+ i5];
 
-                            // --- B. Get G Index (Row-Major G: R^5) ---
-                            // Index = r1*R^4 + r2*R^3 + r3*R^2 + r4*R + r5
-                            const size_t G_idx = r1 * R_4 + r2 * R_cub + r3 * R_sq + r4 * R + r5;
-
-                            // Accumulation
-                            core_tensor_G[G_idx] += a_val * f1_val * f2_val * f3_val * f4_val * f5_val;
+                                // --- B. Get G Index (Row-Major G: R^5) ---
+                                const size_t G_idx = r1 * R_4 + r2 * R_cub + r3 * R_sq + r4 * R + r5;
+                                
+                                // Accumulation into thread-local copy
+                                G_local[G_idx] += a_val * f1_val * f2_val * f3_val * f4_val * f5_val;
+                            }
                         }
                     }
                 }
             }
+        } // End of OpenMP 'for' loop
+
+        // 🔑 Reduction: Merge G_local results back into the shared core_tensor_G
+        // Only one thread can perform this merge operation at a time.
+        #pragma omp critical
+        {
+            for (size_t i = 0; i < output_size; ++i) {
+                core_tensor_G[i] += G_local[i];
+            }
         }
-    }
+    } // End of OpenMP 'parallel' block
 
     return core_tensor_G;
 }
 
-//======================================================================
-// Tensor contraction Calculations (Tucker Decomposition)
-//======================================================================
-
-//3D implementation
-template<typename T, typename S>
-std::vector<T> contract_tensor_3D_cpu(int mode, const std::vector<NNZ_Entry<T>>& sparse_tensor, const std::vector<int>& dims,
-                                     const std::vector<T*>& fmats, int decomp_rank)
-{
-    // --- 1. Validation and Dimension Setup ---
-    if (dims.size() != 3 || mode < 1 || mode > 3) {
-        throw std::invalid_argument("contract_tensor_3D_cpu requires exactly 3 dimensions and mode 1-3.");
-    }
-    if (fmats.size() < (size_t)mode) {
-        throw std::invalid_argument("Factor matrix vector (fmats) must contain the factor matrix for the specified mode.");
-    }
-
-    const int I1 = dims[0];
-    const int I2 = dims[1];
-    const int I3 = dims[2];
-    const int R = decomp_rank; // New dimension (Rank)
-
-    // Original dimension being contracted
-    const int I_mode = dims[mode - 1];
-    T* F = fmats[mode - 1]; // Select the factor matrix for the current mode
-
-    // --- 2. Determine Output Tensor Dimensions and Initialize ---
-    int B_dims[3];
-    B_dims[0] = (mode == 1) ? R : I1;
-    B_dims[1] = (mode == 2) ? R : I2;
-    B_dims[2] = (mode == 3) ? R : I3;
-
-    const int B_I1 = B_dims[0];
-    const int B_I2 = B_dims[1];
-    const int B_I3 = B_dims[2];
-
-    // Pre-calculate products for Row-Major indexing in B
-    const size_t B_P2 = (size_t)B_I3;          // D3
-    const size_t B_P1 = (size_t)B_I2 * B_P2;   // D2*D3
-
-    const size_t output_size = (size_t)B_I1 * B_P1; // D1*D2*D3
-    std::vector<T> output_tensor(output_size, T{0});
-
-    // --- 3. Perform TMM using Sparse Iteration ---
-    for (const auto& entry : sparse_tensor) {
-        if (entry.indices.size() != 3) continue;
-
-        const int i1 = entry.indices[0];
-        const int i2 = entry.indices[1];
-        const int i3 = entry.indices[2];
-        const T a_val = entry.value;
-
-        // Ensure indices are within bounds
-        if (i1 < 0 || i1 >= I1 || i2 < 0 || i2 >= I2 || i3 < 0 || i3 >= I3) {
-            continue;
-        }
-
-        // --- Core TMM Update ---
-        for (int r = 0; r < R; ++r) {
-
-            // --- A. Get F Index (F is I_mode x R, Row-Major) ---
-            int F_row_idx;
-            switch (mode) {
-                case 1: F_row_idx = i1; break;
-                case 2: F_row_idx = i2; break;
-                case 3: F_row_idx = i3; break;
-                default: F_row_idx = 0;
-            }
-            // Index = i_mode * R + r
-            const size_t F_idx = (size_t)F_row_idx * R + r;
-            const T f_val = F[F_idx];
-
-            // --- B. Get B Index (Row-Major B: B_I1 x B_I2 x B_I3) ---
-
-            // The indices of B are the original indices (i1..i3) with 'mode' replaced by 'r'.
-            int B_idx0 = (mode == 1) ? r : i1;
-            int B_idx1 = (mode == 2) ? r : i2;
-            int B_idx2 = (mode == 3) ? r : i3;
-
-            // Row-Major Index Calculation for 3D:
-            // idx = idx0*P1 + idx1*P2 + idx2
-            const size_t B_idx = (size_t)B_idx0 * B_P1 +
-                                 B_idx1 * B_P2 +
-                                 B_idx2;
-
-            // TMM Update: B(...) += A(...) * F(...)
-            output_tensor[B_idx] += a_val * f_val;
-        }
-    }
-
-    return output_tensor;
-}
-
-//4D implementation
-template<typename T, typename S>
-std::vector<T> contract_tensor_4D_cpu(int mode, const std::vector<NNZ_Entry<T>>& sparse_tensor, const std::vector<int>& dims,
-                                     const std::vector<T*>& fmats, int decomp_rank)
-{
-    // --- 1. Validation and Dimension Setup ---
-    if (dims.size() != 4 || mode < 1 || mode > 4) {
-        throw std::invalid_argument("contract_tensor_4D_cpu requires exactly 4 dimensions and mode 1-4.");
-    }
-    if (fmats.size() < (size_t)mode) {
-        throw std::invalid_argument("Factor matrix vector (fmats) must contain the factor matrix for the specified mode.");
-    }
-
-    const int I1 = dims[0];
-    const int I2 = dims[1];
-    const int I3 = dims[2];
-    const int I4 = dims[3];
-    const int R = decomp_rank; // New dimension (Rank)
-
-    // Original dimension being contracted
-    const int I_mode = dims[mode - 1];
-    T* F = fmats[mode - 1]; // Select the factor matrix for the current mode
-
-    // --- 2. Determine Output Tensor Dimensions and Initialize ---
-    int B_dims[4];
-    B_dims[0] = (mode == 1) ? R : I1;
-    B_dims[1] = (mode == 2) ? R : I2;
-    B_dims[2] = (mode == 3) ? R : I3;
-    B_dims[3] = (mode == 4) ? R : I4;
-
-    const int B_I1 = B_dims[0];
-    const int B_I2 = B_dims[1];
-    const int B_I3 = B_dims[2];
-    const int B_I4 = B_dims[3];
-
-    // Pre-calculate products for Row-Major indexing in B
-    const size_t B_P3 = (size_t)B_I4;          // D4
-    const size_t B_P2 = (size_t)B_I3 * B_P3;   // D3*D4
-    const size_t B_P1 = (size_t)B_I2 * B_P2;   // D2*D3*D4
-
-    const size_t output_size = (size_t)B_I1 * B_P1; // D1*D2*D3*D4
-    std::vector<T> output_tensor(output_size, T{0});
-
-    // --- 3. Perform TMM using Sparse Iteration ---
-    for (const auto& entry : sparse_tensor) {
-        if (entry.indices.size() != 4) continue;
-
-        const int i1 = entry.indices[0];
-        const int i2 = entry.indices[1];
-        const int i3 = entry.indices[2];
-        const int i4 = entry.indices[3];
-        const T a_val = entry.value;
-
-        // Ensure indices are within bounds
-        if (i1 < 0 || i1 >= I1 || i2 < 0 || i2 >= I2 || i3 < 0 || i3 >= I3 || i4 < 0 || i4 >= I4) {
-            continue;
-        }
-
-        // --- Core TMM Update ---
-        for (int r = 0; r < R; ++r) {
-
-            // --- A. Get F Index (F is I_mode x R, Row-Major) ---
-            int F_row_idx;
-            switch (mode) {
-                case 1: F_row_idx = i1; break;
-                case 2: F_row_idx = i2; break;
-                case 3: F_row_idx = i3; break;
-                case 4: F_row_idx = i4; break;
-                default: F_row_idx = 0;
-            }
-            // Index = i_mode * R + r
-            const size_t F_idx = (size_t)F_row_idx * R + r;
-            const T f_val = F[F_idx];
-
-            // --- B. Get B Index (Row-Major B: B_I1 x B_I2 x B_I3 x B_I4) ---
-
-            // The indices of B are the original indices (i1..i4) with 'mode' replaced by 'r'.
-            int B_idx0 = (mode == 1) ? r : i1;
-            int B_idx1 = (mode == 2) ? r : i2;
-            int B_idx2 = (mode == 3) ? r : i3;
-            int B_idx3 = (mode == 4) ? r : i4;
-
-            // Row-Major Index Calculation for 4D:
-            // idx = idx0*P1 + idx1*P2 + idx2*P3 + idx3
-            const size_t B_idx = (size_t)B_idx0 * B_P1 +
-                                 B_idx1 * B_P2 +
-                                 B_idx2 * B_P3 +
-                                 B_idx3;
-
-            // TMM Update: B(...) += A(...) * F(...)
-            output_tensor[B_idx] += a_val * f_val;
-        }
-    }
-
-    return output_tensor;
-}
-
-//5D implementation
-template<typename T, typename S>
-std::vector<T> contract_tensor_5D_cpu(int mode, const std::vector<NNZ_Entry<T>>& sparse_tensor, const std::vector<int>& dims,
-                                     const std::vector<T*>& fmats, int decomp_rank)
-{
-    // --- 1. Validation and Dimension Setup ---
-    if (dims.size() != 5 || mode < 1 || mode > 5) {
-        throw std::invalid_argument("contract_tensor_5D_cpu requires exactly 5 dimensions and mode 1-5.");
-    }
-    if (fmats.size() < (size_t)mode) {
-        throw std::invalid_argument("Factor matrix vector (fmats) must contain the factor matrix for the specified mode.");
-    }
-
-    const int I1 = dims[0];
-    const int I2 = dims[1];
-    const int I3 = dims[2];
-    const int I4 = dims[3];
-    const int I5 = dims[4];
-    const int R = decomp_rank; // New dimension (Rank)
-
-    // Original dimension being contracted (e.g., I1 for mode 1)
-    const int I_mode = dims[mode - 1];
-    T* F = fmats[mode - 1]; // Select the factor matrix for the current mode
-
-    // --- 2. Determine Output Tensor Dimensions and Initialize ---
-    int B_dims[5];
-    B_dims[0] = (mode == 1) ? R : I1;
-    B_dims[1] = (mode == 2) ? R : I2;
-    B_dims[2] = (mode == 3) ? R : I3;
-    B_dims[3] = (mode == 4) ? R : I4;
-    B_dims[4] = (mode == 5) ? R : I5;
-
-    const int B_I1 = B_dims[0];
-    const int B_I2 = B_dims[1];
-    const int B_I3 = B_dims[2];
-    const int B_I4 = B_dims[3];
-    const int B_I5 = B_dims[4];
-
-    // Pre-calculate products for Row-Major indexing in B
-    const size_t B_P4 = (size_t)B_I5;                          // D5
-    const size_t B_P3 = (size_t)B_I4 * B_P4;                   // D4*D5
-    const size_t B_P2 = (size_t)B_I3 * B_P3;                   // D3*D4*D5
-    const size_t B_P1 = (size_t)B_I2 * B_P2;                   // D2*D3*D4*D5
-
-    const size_t output_size = (size_t)B_I1 * B_P1; // B_I1 * (B_I2 * B_I3 * B_I4 * B_I5)
-    std::vector<T> output_tensor(output_size, T{0});
-
-    // --- 3. Perform TMM using Sparse Iteration ---
-    for (const auto& entry : sparse_tensor) {
-        if (entry.indices.size() != 5) continue;
-
-        const int i1 = entry.indices[0];
-        const int i2 = entry.indices[1];
-        const int i3 = entry.indices[2];
-        const int i4 = entry.indices[3];
-        const int i5 = entry.indices[4];
-        const T a_val = entry.value;
-
-        // Ensure indices are within bounds
-        if (i1 < 0 || i1 >= I1 || i2 < 0 || i2 >= I2 || i3 < 0 || i3 >= I3 || i4 < 0 || i4 >= I4 || i5 < 0 || i5 >= I5) {
-            continue;
-        }
-
-        // --- Core TMM Update ---
-        for (int r = 0; r < R; ++r) {
-
-            // --- A. Get F Index (F is I_mode x R, Row-Major) ---
-            // The row of F is the index of the dimension being contracted (i_mode).
-            int F_row_idx;
-            switch (mode) {
-                case 1: F_row_idx = i1; break;
-                case 2: F_row_idx = i2; break;
-                case 3: F_row_idx = i3; break;
-                case 4: F_row_idx = i4; break;
-                case 5: F_row_idx = i5; break;
-                default: F_row_idx = 0;
-            }
-            // Index = i_mode * R + r
-            const size_t F_idx = (size_t)F_row_idx * R + r;
-            const T f_val = F[F_idx];
-
-            // --- B. Get B Index (Row-Major B: B_I1 x B_I2 x B_I3 x B_I4 x B_I5) ---
-
-            // The indices of B are the original indices (i1..i5) with 'mode' replaced by 'r'.
-            int B_idx0 = (mode == 1) ? r : i1;
-            int B_idx1 = (mode == 2) ? r : i2;
-            int B_idx2 = (mode == 3) ? r : i3;
-            int B_idx3 = (mode == 4) ? r : i4;
-            int B_idx4 = (mode == 5) ? r : i5;
-
-            // Row-Major Index Calculation for 5D:
-            // idx = idx0*P1 + idx1*P2 + idx2*P3 + idx3*P4 + idx4
-            const size_t B_idx = (size_t)B_idx0 * B_P1 +
-                                 B_idx1 * B_P2 +
-                                 B_idx2 * B_P3 +
-                                 B_idx3 * B_P4 +
-                                 B_idx4;
-
-            // TMM Update: B(...) += A(...) * F(...)
-            output_tensor[B_idx] += a_val * f_val;
-        }
-    }
-
-    return output_tensor;
-}
 
 //======================================================================
 // Output comparison functions
