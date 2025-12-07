@@ -1,2 +1,0 @@
-/var/spool/slurm/job40562415/slurm_script: line 20: 3770034 Killed                  ./cuda_tests 1000000 1 10 10000 50000 100000 320
-slurmstepd: error: Detected 1 oom_kill event in StepId=40562415.batch. Some of the step tasks have been OOM Killed.
