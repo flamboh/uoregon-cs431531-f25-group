@@ -211,12 +211,19 @@ void run_ttms(const LaunchConfig& cfg, int block_size) {
     const double total_entries = static_cast<double>(product_u64(cfg.dims));
     const double density = static_cast<double>(cfg.nnz) / total_entries;
     auto mat_start = std::chrono::high_resolution_clock::now();
+    const double gm = std::pow(static_cast<double>(product_u64(cfg.dims)),
+                               1.0 / static_cast<double>(cfg.rank_n));
+    const int min_dim = *std::min_element(cfg.dims.begin(), cfg.dims.end());
+    int block_edge = static_cast<int>(std::floor(gm / 20.0));
+    block_edge = std::max(1, block_edge);
+    block_edge = std::min(block_edge, min_dim);
+
     vector<NNZ_Entry<T>> entries = generate_block_sparse_tensor_nd<T>(
         cfg.dims,
         static_cast<uint64_t>(cfg.nnz),
         0,
         100,
-        std::max(1, cfg.dims[0] / 20),
+        block_edge,
         100);
     auto mat_end = std::chrono::high_resolution_clock::now();
 
@@ -226,7 +233,8 @@ void run_ttms(const LaunchConfig& cfg, int block_size) {
     const double mat_ms = std::chrono::duration<double, std::milli>(mat_end - mat_start).count();
     const double factor_ms = std::chrono::duration<double, std::milli>(factor_end - factor_start).count();
     std::cout << "Matricization time: " << mat_ms << " ms | Factor init time: "
-              << factor_ms << " ms | density=" << density << "\n";
+              << factor_ms << " ms | density=" << density
+              << " | block_edge=" << block_edge << "\n";
     vector<T*> blco_fmats = blco.get_fmats();
     std::vector<std::vector<T>> row_major_fmats(cfg.rank_n);
     for (int mode_idx = 0; mode_idx < cfg.rank_n; ++mode_idx) {
