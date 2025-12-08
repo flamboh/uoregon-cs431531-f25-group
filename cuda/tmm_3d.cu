@@ -27,14 +27,25 @@ T* tmm_3d_cuda(const Blco_Tensor<T, S>& sparse_tensor,
                bool log_timings) {
     validate_3d_mode(mode);
     validate_3d_dims(sparse_tensor.get_dims());
-    return tmm_nd_cuda<T, S>(sparse_tensor, mode, block_size, log_timings);
+    return tmm_nd_cuda<T, S>(sparse_tensor,
+                             mode,
+                             block_size,
+                             log_timings,
+                             nullptr,
+                             nullptr,
+                             nullptr);
 }
 
 template <typename T, typename S>
 T* tucker_compute_core_3d_cuda(const Blco_Tensor<T, S>& sparse_tensor,
                                int block_size) {
     validate_3d_dims(sparse_tensor.get_dims());
-    return tucker_compute_core_nd_cuda<T, S>(sparse_tensor, block_size);
+    return tucker_compute_core_nd_cuda<T, S>(sparse_tensor,
+                                             block_size,
+                                             true,
+                                             nullptr,
+                                             nullptr,
+                                             nullptr);
 }
 
 template <typename T, typename S>

@@ -12,7 +12,6 @@
 
 #include "cuda_utils.cuh"
 #include "tmm_nd.cuh"
-#include "../tensor_storage/tensor_utils.h"
 
 namespace {
 
@@ -483,7 +482,10 @@ template <typename T, typename S>
 T* tmm_nd_cuda(const Blco_Tensor<T, S>& sparse_tensor,
                int mode,
                int block_size,
-               bool log_timings) {
+               bool log_timings,
+               double* upload_ms_out,
+               double* kernel_ms_out,
+               double* download_ms_out) {
     auto total_start = std::chrono::high_resolution_clock::now();
     std::vector<int> dims = sparse_tensor.get_dims();
     const int rank_n = static_cast<int>(dims.size());
@@ -555,6 +557,9 @@ T* tmm_nd_cuda(const Blco_Tensor<T, S>& sparse_tensor,
     auto upload_end = std::chrono::high_resolution_clock::now();
     const double upload_ms =
         std::chrono::duration<double, std::milli>(upload_end - upload_start).count();
+    if (upload_ms_out) {
+        *upload_ms_out = upload_ms;
+    }
 
     if (block_size <= 0) {
         block_size = 256;
@@ -589,6 +594,9 @@ T* tmm_nd_cuda(const Blco_Tensor<T, S>& sparse_tensor,
     CUDA_CHECK(cudaEventSynchronize(kernel_stop));
     float kernel_ms = 0.0f;
     CUDA_CHECK(cudaEventElapsedTime(&kernel_ms, kernel_start, kernel_stop));
+    if (kernel_ms_out) {
+        *kernel_ms_out = static_cast<double>(kernel_ms);
+    }
 
     T* host_output = static_cast<T*>(malloc(static_cast<size_t>(output_elems) * sizeof(T)));
     cudaEvent_t download_start, download_stop;
@@ -603,6 +611,9 @@ T* tmm_nd_cuda(const Blco_Tensor<T, S>& sparse_tensor,
     CUDA_CHECK(cudaEventSynchronize(download_stop));
     float download_ms = 0.0f;
     CUDA_CHECK(cudaEventElapsedTime(&download_ms, download_start, download_stop));
+    if (download_ms_out) {
+        *download_ms_out = static_cast<double>(download_ms);
+    }
 
     free_blocks_from_gpu(d_blocks, num_blocks);
     free_factor_matrices_from_device(d_fmats);
@@ -634,7 +645,11 @@ T* tmm_nd_cuda(const Blco_Tensor<T, S>& sparse_tensor,
 
 template <typename T, typename S>
 T* tucker_compute_core_nd_cuda(const Blco_Tensor<T, S>& sparse_tensor,
-                               int block_size) {
+                               int block_size,
+                               bool log_timings,
+                               double* upload_ms_out,
+                               double* kernel_ms_out,
+                               double* download_ms_out) {
     auto total_start = std::chrono::high_resolution_clock::now();
     std::vector<int> dims = sparse_tensor.get_dims();
     const int rank_n = static_cast<int>(dims.size());
@@ -694,6 +709,9 @@ T* tucker_compute_core_nd_cuda(const Blco_Tensor<T, S>& sparse_tensor,
     auto upload_end = std::chrono::high_resolution_clock::now();
     const double upload_ms =
         std::chrono::duration<double, std::milli>(upload_end - upload_start).count();
+    if (upload_ms_out) {
+        *upload_ms_out = upload_ms;
+    }
 
     if (block_size <= 0) {
         block_size = 256;
@@ -722,6 +740,9 @@ T* tucker_compute_core_nd_cuda(const Blco_Tensor<T, S>& sparse_tensor,
     CUDA_CHECK(cudaEventSynchronize(kernel_stop));
     float kernel_ms = 0.0f;
     CUDA_CHECK(cudaEventElapsedTime(&kernel_ms, kernel_start, kernel_stop));
+    if (kernel_ms_out) {
+        *kernel_ms_out = static_cast<double>(kernel_ms);
+    }
 
     T* host_output = static_cast<T*>(malloc(static_cast<size_t>(output_elems) * sizeof(T)));
     cudaEvent_t download_start, download_stop;
@@ -736,6 +757,9 @@ T* tucker_compute_core_nd_cuda(const Blco_Tensor<T, S>& sparse_tensor,
     CUDA_CHECK(cudaEventSynchronize(download_stop));
     float download_ms = 0.0f;
     CUDA_CHECK(cudaEventElapsedTime(&download_ms, download_start, download_stop));
+    if (download_ms_out) {
+        *download_ms_out = static_cast<double>(download_ms);
+    }
 
     free_blocks_from_gpu(d_blocks, num_blocks);
     if (d_factor_ptrs) {
@@ -752,13 +776,17 @@ T* tucker_compute_core_nd_cuda(const Blco_Tensor<T, S>& sparse_tensor,
     CUDA_CHECK(cudaEventDestroy(download_start));
     CUDA_CHECK(cudaEventDestroy(download_stop));
 
-    std::cout << "Core GPU timings (ms) upload=" << upload_ms
-              << " kernel=" << kernel_ms
-              << " download=" << download_ms << "\n";
+    if (log_timings) {
+        std::cout << "Core GPU timings (ms) upload=" << upload_ms
+                  << " kernel=" << kernel_ms
+                  << " download=" << download_ms << "\n";
+    }
     auto total_end = std::chrono::high_resolution_clock::now();
     const double total_ms =
         std::chrono::duration<double, std::milli>(total_end - total_start).count();
-    std::cout << "Core total wall time (ms): " << total_ms << "\n";
+    if (log_timings) {
+        std::cout << "Core total wall time (ms): " << total_ms << "\n";
+    }
 
     return host_output;
 }
@@ -905,8 +933,8 @@ T* contract_n_minus_one_modes_nd_cuda(const Blco_Tensor<T, S>& sparse_tensor,
 }
 
 #define INSTANTIATE_TMM_ND(TTYPE, STYPE) \
-    template TTYPE* tmm_nd_cuda<TTYPE, STYPE>(const Blco_Tensor<TTYPE, STYPE>&, int, int, bool); \
-    template TTYPE* tucker_compute_core_nd_cuda<TTYPE, STYPE>(const Blco_Tensor<TTYPE, STYPE>&, int); \
+    template TTYPE* tmm_nd_cuda<TTYPE, STYPE>(const Blco_Tensor<TTYPE, STYPE>&, int, int, bool, double*, double*, double*); \
+    template TTYPE* tucker_compute_core_nd_cuda<TTYPE, STYPE>(const Blco_Tensor<TTYPE, STYPE>&, int, bool, double*, double*, double*); \
     template TTYPE* contract_n_minus_one_modes_nd_cuda<TTYPE, STYPE>(const Blco_Tensor<TTYPE, STYPE>&, int, int);
 
 INSTANTIATE_TMM_ND(int, uint64_t)

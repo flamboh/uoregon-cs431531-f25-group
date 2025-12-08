@@ -9,11 +9,18 @@ template <typename T, typename S>
 T* tmm_nd_cuda(const Blco_Tensor<T, S>& sparse_tensor,
                int mode,
                int block_size = 256,
-               bool log_timings = true);
+               bool log_timings = true,
+               double* upload_ms_out = nullptr,
+               double* kernel_ms_out = nullptr,
+               double* download_ms_out = nullptr);
 
 template <typename T, typename S>
 T* tucker_compute_core_nd_cuda(const Blco_Tensor<T, S>& sparse_tensor,
-                               int block_size = 256);
+                               int block_size = 256,
+                               bool log_timings = true,
+                               double* upload_ms_out = nullptr,
+                               double* kernel_ms_out = nullptr,
+                               double* download_ms_out = nullptr);
 
 template <typename T, typename S>
 T* contract_n_minus_one_modes_nd_cuda(const Blco_Tensor<T, S>& sparse_tensor,

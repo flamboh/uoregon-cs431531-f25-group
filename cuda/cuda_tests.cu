@@ -258,13 +258,19 @@ void run_ttms(const LaunchConfig& cfg, int block_size) {
         modes_to_run = {cfg.mode};
     }
 
-    double total_cpu_time = 0.0;
-    double total_gpu_time = 0.0;
+    double total_cpu_tmm = 0.0;
+    double total_gpu_tmm = 0.0;
+    double total_upload_ms = 0.0;
+    double total_kernel_ms = 0.0;
+    double total_download_ms = 0.0;
 
     struct TmmSummary {
         int mode;
         double cpu_ms;
         double gpu_ms;
+        double upload_ms;
+        double kernel_ms;
+        double download_ms;
         bool pass;
     };
     std::vector<TmmSummary> tmm_summaries;
@@ -274,7 +280,14 @@ void run_ttms(const LaunchConfig& cfg, int block_size) {
         std::cout << "\n=== Mode " << target_mode << " TMM ===\n";
         std::cout << "[Mode " << target_mode
                   << "] Warmup TMM launch to stabilize GPU state...\n";
-        T* warmup_out = tmm_nd_cuda<T, S>(blco, target_mode, block_size, false);
+        T* warmup_out = tmm_nd_cuda<T, S>(
+            blco,
+            target_mode,
+            block_size,
+            false,
+            nullptr,
+            nullptr,
+            nullptr);
         free(warmup_out);
 
         auto cpu_tmm_start = std::chrono::high_resolution_clock::now();
@@ -290,7 +303,17 @@ void run_ttms(const LaunchConfig& cfg, int block_size) {
         std::cout << "[Mode " << target_mode << "] TMM CPU time: " << cpu_tmm_ms << " ms\n";
 
         auto gpu_tmm_start = std::chrono::high_resolution_clock::now();
-        T* gpu_ttm = tmm_nd_cuda<T, S>(blco, target_mode, block_size);
+        double upload_ms = 0.0;
+        double kernel_ms = 0.0;
+        double download_ms = 0.0;
+        T* gpu_ttm = tmm_nd_cuda<T, S>(
+            blco,
+            target_mode,
+            block_size,
+            true,
+            &upload_ms,
+            &kernel_ms,
+            &download_ms);
         auto gpu_tmm_end = std::chrono::high_resolution_clock::now();
         const double gpu_tmm_ms =
             std::chrono::duration<double, std::milli>(gpu_tmm_end - gpu_tmm_start).count();
@@ -327,10 +350,15 @@ void run_ttms(const LaunchConfig& cfg, int block_size) {
             }
         }
         std::cout << "[Mode " << target_mode << "] TMM GPU total wall time: "
-                  << gpu_tmm_ms << " ms\n";
-        total_cpu_time += cpu_tmm_ms;
-        total_gpu_time += gpu_tmm_ms;
-        tmm_summaries.push_back({target_mode, cpu_tmm_ms, gpu_tmm_ms, tmm_pass});
+                  << gpu_tmm_ms << " ms (upload=" << upload_ms
+                  << " ms, kernel=" << kernel_ms
+                  << " ms, download=" << download_ms << " ms)\n";
+        total_cpu_tmm += cpu_tmm_ms;
+        total_gpu_tmm += gpu_tmm_ms;
+        total_upload_ms += upload_ms;
+        total_kernel_ms += kernel_ms;
+        total_download_ms += download_ms;
+        tmm_summaries.push_back({target_mode, cpu_tmm_ms, gpu_tmm_ms, upload_ms, kernel_ms, download_ms, tmm_pass});
         free(gpu_ttm);
     }
 
@@ -339,9 +367,25 @@ void run_ttms(const LaunchConfig& cfg, int block_size) {
         for (const auto& summary : tmm_summaries) {
             std::cout << "  Mode " << summary.mode
                       << ": CPU " << summary.cpu_ms << " ms | GPU "
-                      << summary.gpu_ms << " ms | "
+                      << summary.gpu_ms << " ms (upload " << summary.upload_ms
+                      << " ms, kernel " << summary.kernel_ms
+                      << " ms, download " << summary.download_ms << " ms) | "
                       << (summary.pass ? "PASS" : "FAIL") << "\n";
         }
+    }
+
+    if (!tmm_summaries.empty()) {
+        const double inv_modes = 1.0 / static_cast<double>(tmm_summaries.size());
+        const double avg_cpu_tmm = total_cpu_tmm * inv_modes;
+        const double avg_gpu_tmm = total_gpu_tmm * inv_modes;
+        const double avg_upload = total_upload_ms * inv_modes;
+        const double avg_kernel = total_kernel_ms * inv_modes;
+        const double avg_download = total_download_ms * inv_modes;
+        std::cout << "\nAverage TMM timings (" << tmm_summaries.size() << " mode(s)):\n";
+        std::cout << "  CPU: " << avg_cpu_tmm << " ms\n";
+        std::cout << "  GPU: " << avg_gpu_tmm << " ms (upload " << avg_upload
+                  << " ms, kernel " << avg_kernel
+                  << " ms, download " << avg_download << " ms)\n";
     }
 
     std::vector<T*> cpu_fmats_row_ptrs(cfg.rank_n);
@@ -356,7 +400,16 @@ void run_ttms(const LaunchConfig& cfg, int block_size) {
         std::chrono::duration<double, std::milli>(cpu_core_end - cpu_core_start).count();
     std::cout << "Core CPU time: " << cpu_core_ms << " ms\n";
     auto gpu_core_start = std::chrono::high_resolution_clock::now();
-    T* cuda_core = tucker_compute_core_nd_cuda<T, S>(blco, block_size);
+    double core_upload_ms = 0.0;
+    double core_kernel_ms = 0.0;
+    double core_download_ms = 0.0;
+    T* cuda_core = tucker_compute_core_nd_cuda<T, S>(
+        blco,
+        block_size,
+        true,
+        &core_upload_ms,
+        &core_kernel_ms,
+        &core_download_ms);
     auto gpu_core_end = std::chrono::high_resolution_clock::now();
     const double gpu_core_ms =
         std::chrono::duration<double, std::milli>(gpu_core_end - gpu_core_start).count();
@@ -384,8 +437,14 @@ void run_ttms(const LaunchConfig& cfg, int block_size) {
               << " (" << cfg.decomp_rank << "^" << cfg.rank_n << " values)\n";
     free(cuda_core);
 
-    total_cpu_time += cpu_core_ms;
-    total_gpu_time += gpu_core_ms;
+    std::cout << "\nCore timings:\n";
+    std::cout << "  CPU: " << cpu_core_ms << " ms\n";
+    std::cout << "  GPU: " << gpu_core_ms << " ms (upload " << core_upload_ms
+              << " ms, kernel " << core_kernel_ms
+              << " ms, download " << core_download_ms << " ms)\n";
+
+    const double total_cpu_time = total_cpu_tmm + cpu_core_ms;
+    const double total_gpu_time = total_gpu_tmm + gpu_core_ms;
 
     std::cout << "\nTotal CPU compute time (TMM + core): "
               << total_cpu_time << " ms\n";
