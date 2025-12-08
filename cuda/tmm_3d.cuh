@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../tensor_storage/blco.h"
+#include "tmm_nd.cuh"
 
 template <typename T, typename S>
 T* tmm_3d_cuda(const Blco_Tensor<T, S>& sparse_tensor,

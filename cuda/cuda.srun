@@ -17,5 +17,4 @@ export OMP_NUM_THREADS=$SLURM_ARRAY_TASK_ID
 
 
 
-./cuda_tests 50000 0 15 2500 2500 2500 1024
-
+./cuda_tests 5000 0 6 7 10 10 10 10 10 10 10 3
